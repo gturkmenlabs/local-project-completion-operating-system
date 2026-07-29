@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
+import tokenize
 from pathlib import Path
 
 from .models import ProjectState, Task
@@ -236,11 +238,29 @@ def is_real_marker(line: str, match: re.Match, is_markdown: bool) -> bool:
         return not stripped or all(char in MARKDOWN_LEAD for char in stripped)
     if not stripped:
         return True
-    return any(starter in prefix for starter in COMMENT_STARTERS)
+    for starter in COMMENT_STARTERS:
+        index = prefix.rfind(starter)
+        if index >= 0 and not prefix[index + len(starter) :].strip():
+            return True
+    return False
 
 
 def _clean_detail(detail: str) -> str:
     return detail.strip().strip("`\"'*_ \t-").strip()
+
+
+def _python_comments(content: str) -> list[tuple[int, str]]:
+    comments: list[tuple[int, str]] = []
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(content).readline)
+        for token in tokens:
+            if token.type == tokenize.COMMENT:
+                comments.append((token.start[0], token.string))
+    except (IndentationError, SyntaxError, tokenize.TokenError):
+        # Keep comments tokenized before an incomplete trailing statement. This
+        # repository scanner often runs while source files are mid-edit.
+        pass
+    return comments
 
 
 def _extract_todos(root: Path) -> list[Task]:
@@ -253,7 +273,11 @@ def _extract_todos(root: Path) -> list[Task]:
             continue
         relative = path.relative_to(root).as_posix()
         is_markdown = path.suffix.lower() == ".md"
-        for number, line in enumerate(content.splitlines(), 1):
+        if path.suffix.lower() == ".py":
+            candidates = _python_comments(content)
+        else:
+            candidates = enumerate(content.splitlines(), 1)
+        for number, line in candidates:
             match = TODO_RE.search(line)
             if not match or not is_real_marker(line, match, is_markdown):
                 continue

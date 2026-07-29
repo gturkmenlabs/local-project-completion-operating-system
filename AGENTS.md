@@ -23,4 +23,7 @@ complete the project.
 9. Adding work or discovering new markers reopens final verification. Re-run it.
 10. Ask only before destructive operations, secret access, paid actions, publishing, or
    major product decisions unsupported by repository evidence.
-11. Output compactly: `Yapıldı`, `Kanıt`, `Sonraki`, `Blok`.
+11. For product-design or UX work, run `altai autopilot . --design` after the project
+   model is confirmed. Read `.altai/design/` before coding UI; never invent screenshot,
+   browser, responsive, console, or flow evidence.
+12. Output compactly: `Yapıldı`, `Kanıt`, `Sonraki`, `Blok`.

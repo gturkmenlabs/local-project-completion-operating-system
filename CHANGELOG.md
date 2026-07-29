@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0
+
+Product design and UX architecture before interface implementation.
+
+* **Product design package** (`altai/design/`). Confirmed `ProjectModel` data now feeds
+  `ProductArchitect`, `UXPlanner`, `ScreenGenerator`, `DesignSystemBuilder`, and
+  `UIReviewer`. The pipeline writes product architecture, user flows, screen architecture,
+  design tokens, and a pre-code review under `.altai/design/`.
+* **`altai autopilot [path] --design`**. Opt-in design generation runs before the normal
+  dependency-ready task report. Plain autopilot remains report-only.
+* **Brand-safe defaults.** Existing design tokens are recursively preserved; projects
+  without brand tokens receive a restrained default system with spacing, radius,
+  typography, breakpoints, focus, contrast, and target-size requirements.
+* **Evidence contract.** `VisualVerifier` validates build, screenshot, mobile-width,
+  console, and primary-flow evidence supplied by Claude Code or Codex. It never launches
+  the project or browser itself.
+* **Caveman Codex skill** (`.codex/skills/caveman/`) is bundled project-locally and copied
+  by the installer.
+* **Batch integration installer.** One command can install the project-local bundle into
+  several targets. `--dry-run` previews writes, `--no-caveman` omits Caveman for new
+  targets, and `.altai/integration.json` records features plus exact operating commands.
+
 ## 0.4.0
 
 Opportunity discovery and a bounded control-layer wrapper, on top of the intelligence

@@ -20,6 +20,24 @@ root except the agent config files. An existing `CLAUDE.md` or `AGENTS.md` is pr
 the ALTAI section is spliced in between `<!-- BEGIN ALTAI -->` / `<!-- END ALTAI -->`
 markers and re-running the installer updates that block in place.
 
+Install the same project-local stack into several projects in one command:
+
+```bash
+python scripts/install_into_project.py ~/code/app-one ~/code/app-two
+```
+
+The default bundle contains ALTAI, the product-design layer, and Caveman. Preview without
+writing, or omit Caveman for new targets:
+
+```bash
+python scripts/install_into_project.py --dry-run ~/code/app-one ~/code/app-two
+python scripts/install_into_project.py --no-caveman ~/code/app-one
+```
+
+Each target receives `.altai/integration.json`, which records installed features and the
+exact start, continue, and design commands. Re-running the installer updates ALTAI-owned
+files while preserving existing `AGENTS.md` and `CLAUDE.md` content.
+
 Optionally install the CLI globally instead of vendoring it:
 
 ```bash
@@ -63,6 +81,37 @@ contradiction that closes itself once resolved. Confirming the project's purpose
 exempt from (and gates) `quality-gates`: nothing else proceeds until the project's own
 intent is confirmed, not merely derived from documentation.
 
+## Product design and UX architecture
+
+Use the opt-in design pass after the host agent has confirmed `project-model.json`:
+
+```bash
+altai autopilot . --design
+```
+
+Before returning the normal dependency-ready task, ALTAI writes an inspectable pre-code
+design plan:
+
+```text
+.altai/design/product-architecture.json
+.altai/design/user-flows.md
+.altai/design/screen-architecture.json
+.altai/design/design-system.json
+.altai/design/ui-review.json
+.altai/research/design-benchmark.md
+```
+
+The flow is `ProjectModel → ProductArchitect → UXPlanner → ScreenGenerator →
+DesignSystemBuilder → UIReviewer`. It prioritizes the confirmed target user, chooses the
+smallest screen set supported by the core flow, preserves existing design tokens, and stops
+when the model is unconfirmed. Logo/name changes, a replacement target audience, paid tools,
+and legal or corporate brand decisions remain human decisions.
+
+`--design` does not write application UI, browse the web, launch the project, take
+screenshots, or claim visual conformance. Claude Code or Codex performs benchmark research
+and implementation. Afterwards, `VisualVerifier` can validate the host agent's recorded
+build, screenshot, mobile-width, console, and primary-flow evidence.
+
 `altai autopilot` runs one bounded rescan and reports the single next actionable task
 (with related files and memory attached), the top open opportunities, and a policy check
 on the active task's own text against the stop-and-ask categories below. It does not
@@ -86,7 +135,7 @@ normal loop.
 | `altai rule "condition" "rule"` | Record a check-before-acting rule. |
 | `altai opportunities [--json]` | List scored, not-yet-adopted improvement candidates. |
 | `altai promote <opportunity-id>` | Turn one opportunity into a real task. |
-| `altai autopilot [--json] [--no-rescan]` | One rescan; next task + opportunities + policy check. Implements nothing itself. |
+| `altai autopilot [path] [--design] [--json] [--no-rescan]` | Optionally generate the pre-code design plan, then report one task + opportunities + policy check. |
 
 Substitute `python .altai/tool/run.py` for `altai` when using the vendored install.
 
@@ -121,6 +170,7 @@ agreement. A shell loop can branch on any of these without parsing status text.
 .altai/
 ├── project-state.json   # task graph + progress (managed by the CLI, do not hand-edit)
 ├── project-model.json   # what the project is for, and where that contradicts reality
+├── design/               # product architecture, flows, screens, tokens and review reports
 ├── code-graph.json      # file/symbol/call graph
 ├── opportunities.json   # scored, not-yet-adopted improvement candidates
 ├── memory/               # architecture, product-decisions, coding-conventions,
@@ -155,4 +205,12 @@ enforcement of what the host agent can do belongs to Claude Code / Codex configu
 
 ```bash
 python -m pytest -q
+python -m compileall -q altai
+python -m pip wheel . --no-deps --no-build-isolation --wheel-dir /tmp/altai-wheel
 ```
+
+These are the required local quality gates: tests, syntax compilation, and an installable
+wheel. Every command must exit with status 0; any failure keeps the active ALTAI task open
+until it is fixed and rerun. The project currently configures no dedicated linter, static
+type checker, or security scanner, and the package has no runtime dependencies. Do not
+claim those checks ran unless the corresponding tool is deliberately added and documented.

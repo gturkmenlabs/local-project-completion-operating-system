@@ -1,8 +1,15 @@
+import json
 import threading
+from pathlib import Path
 
 from altai.autopilot import EXIT_BLOCKED, EXIT_COMPLETE, EXIT_OK, EXIT_POLICY_HOLD, run_autopilot
 from altai.cli import main
-from altai.intelligence.opportunity_finder import load_opportunities
+from altai.intelligence import load_model, save_model
+from altai.intelligence.opportunity_finder import (
+    OpportunityCandidate,
+    load_opportunities,
+    save_opportunities,
+)
 from altai.memory import load_state
 from altai.orchestrator import (
     add_task,
@@ -93,6 +100,40 @@ def test_autopilot_includes_top_opportunities(tmp_path):
     assert any(c["kind"] == "large-function" for c in report.opportunities)
 
 
+def test_autopilot_applies_safe_recommendations(tmp_path):
+    root = _bare_project(tmp_path)
+    body = "\n".join(f"    x{i} = {i}" for i in range(80))
+    (root / "app.py").write_text(f"def big():\n{body}\n    return x0\n", encoding="utf-8")
+
+    report = run_autopilot(root, apply_recommendations=True)
+
+    candidate = next(
+        c for c in report.applied_recommendations if c["kind"] == "large-function"
+    )
+    assert load_state(root).task(candidate["id"]) is not None
+    assert candidate["id"] not in {c.id for c in load_opportunities(root)}
+
+
+def test_autopilot_does_not_apply_policy_held_recommendations(tmp_path):
+    root = _bare_project(tmp_path)
+    run_autopilot(root)
+    candidate = OpportunityCandidate(
+        id="opp-publish",
+        kind="manual",
+        title="Publish the application",
+        description="Deploy the application to production",
+        file="",
+        score=1,
+    )
+    save_opportunities(root, [candidate])
+
+    report = run_autopilot(root, rescan=False, apply_recommendations=True)
+
+    assert report.applied_recommendations == []
+    assert load_state(root).task(candidate.id) is None
+    assert [item["id"] for item in report.opportunities] == [candidate.id]
+
+
 def test_autopilot_single_rescan_per_call(tmp_path, monkeypatch):
     root = _bare_project(tmp_path)
     calls = []
@@ -108,6 +149,54 @@ def test_autopilot_single_rescan_per_call(tmp_path, monkeypatch):
     run_autopilot(root)
 
     assert len(calls) == 1
+
+
+def test_autopilot_design_generates_pre_code_artifacts(tmp_path):
+    root = _bare_project(tmp_path)
+    run_autopilot(root)
+    model = load_model(root)
+    model.purpose = "Help developers complete a project"
+    model.target_user = "Developers"
+    model.core_flow = ["Open project", "Complete work", "Test and record evidence"]
+    model.non_goals = ["Publish automatically"]
+    model.derived = [
+        field
+        for field in model.derived
+        if field not in {"purpose", "target_user", "core_flow", "non_goals"}
+    ]
+    model.needs_review = []
+    save_model(model)
+
+    report = run_autopilot(root, rescan=False, design=True)
+
+    assert set(report.design) == {
+        "product_architecture",
+        "user_flows",
+        "screen_architecture",
+        "design_system",
+        "ui_review",
+        "design_benchmark",
+    }
+    assert all(Path(path).exists() for path in report.design.values())
+
+
+def test_cli_accepts_positional_project_with_design(tmp_path, capsys):
+    root = _bare_project(tmp_path)
+    run_autopilot(root)
+    model = load_model(root)
+    model.purpose = "Help developers complete a project"
+    model.target_user = "Developers"
+    model.core_flow = ["Open project", "Complete work", "Test and record evidence"]
+    model.non_goals = ["Publish automatically"]
+    model.derived = []
+    model.needs_review = []
+    save_model(model)
+
+    exit_code = main(["autopilot", str(root), "--design", "--no-rescan", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code in (EXIT_OK, EXIT_BLOCKED, EXIT_COMPLETE, EXIT_POLICY_HOLD)
+    assert "product_architecture" in payload["design"]
 
 
 def test_promote_creates_a_task_and_removes_the_opportunity(tmp_path):
@@ -202,6 +291,23 @@ def test_cli_autopilot_and_promote(tmp_path, capsys):
     assert main(["promote", candidate_id, "--path", str(root)]) == 0
     capsys.readouterr()
     assert load_state(root).task(candidate_id) is not None
+
+
+def test_cli_autopilot_applies_recommendations(tmp_path, capsys):
+    root = _bare_project(tmp_path)
+    body = "\n".join(f"    x{i} = {i}" for i in range(80))
+    (root / "app.py").write_text(f"def big():\n{body}\n    return x0\n", encoding="utf-8")
+
+    exit_code = main(
+        ["autopilot", "--apply-recommendations", "--json", "--path", str(root)]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code in (EXIT_OK, EXIT_BLOCKED, EXIT_COMPLETE, EXIT_POLICY_HOLD)
+    candidate = next(
+        c for c in payload["applied_recommendations"] if c["kind"] == "large-function"
+    )
+    assert load_state(root).task(candidate["id"]) is not None
 
 
 def test_concurrent_promotions_do_not_lose_a_candidate(tmp_path):

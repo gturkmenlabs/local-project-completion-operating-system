@@ -14,5 +14,8 @@ recorded progress and evidence trail are lost.
 Use web research only when the active task needs it, and save compressed evidence under
 `.altai/research/`.
 
+For product-design or UX work, run `altai autopilot . --design` after the project model is
+confirmed. Read `.altai/design/` before coding UI and never fabricate rendered evidence.
+
 Human approval remains mandatory for destructive actions, credentials, spending,
 deployment/publication, and ambiguous product decisions.

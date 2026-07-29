@@ -1,10 +1,11 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from install_into_project import BEGIN, END, install  # noqa: E402
+from install_into_project import BEGIN, END, install, main  # noqa: E402
 
 
 def test_install_does_not_pollute_project_root(tmp_path):
@@ -13,7 +14,18 @@ def test_install_does_not_pollute_project_root(tmp_path):
     assert "altai" not in top_level, "the package must not land in the project root"
     assert (tmp_path / ".altai" / "tool" / "altai" / "cli.py").exists()
     assert (tmp_path / ".altai" / "tool" / "altai" / "intelligence" / "project_model.py").exists()
+    assert (tmp_path / ".altai" / "tool" / "altai" / "design" / "product_architect.py").exists()
+    assert (tmp_path / ".codex" / "skills" / "caveman" / "SKILL.md").exists()
     assert (tmp_path / ".altai" / "tool" / "run.py").exists()
+    manifest = json.loads((tmp_path / ".altai" / "integration.json").read_text(encoding="utf-8"))
+    assert manifest["altai_version"] == "0.5.0"
+    assert manifest["features"] == ["altai", "product-design", "caveman"]
+    assert manifest["commands"]["continue"].endswith(
+        "autopilot . --apply-recommendations"
+    )
+    assert manifest["commands"]["design"].endswith(
+        "autopilot . --design --apply-recommendations"
+    )
 
 
 def test_launcher_runs_from_project_root(tmp_path):
@@ -50,3 +62,34 @@ def test_reinstall_does_not_duplicate_the_block(tmp_path):
 def test_pycache_is_not_vendored(tmp_path):
     install(tmp_path)
     assert not list((tmp_path / ".altai" / "tool").rglob("__pycache__"))
+
+
+def test_install_can_exclude_caveman(tmp_path):
+    install(tmp_path, include_caveman=False)
+
+    assert not (tmp_path / ".codex" / "skills" / "caveman").exists()
+    manifest = json.loads((tmp_path / ".altai" / "integration.json").read_text(encoding="utf-8"))
+    assert manifest["features"] == ["altai", "product-design"]
+
+
+def test_dry_run_writes_nothing(tmp_path):
+    target = tmp_path / "new-project"
+
+    actions = install(target, dry_run=True)
+
+    assert any("would install" in action for action in actions)
+    assert not target.exists()
+
+
+def test_main_installs_multiple_projects(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_into_project.py", str(first), str(second)],
+    )
+
+    assert main() == 0
+    assert (first / ".altai" / "integration.json").exists()
+    assert (second / ".altai" / "integration.json").exists()

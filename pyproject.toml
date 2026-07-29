@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "altai-agent"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local project completion operating system for Claude Code and Codex"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,7 @@ altai = "altai.cli:main"
 # aborts the build as soon as any second top-level directory exists
 # ("Multiple top-level packages discovered in a flat-layout").
 [tool.setuptools]
-packages = ["altai", "altai.intelligence"]
+packages = ["altai", "altai.design", "altai.intelligence"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

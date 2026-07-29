@@ -103,6 +103,21 @@ proceeding, the same as any destructive/credential/spending/publish/product deci
 Calling `autopilot` repeatedly is fine — each call is one bounded rescan, not a loop that
 keeps scanning internally.
 
+## Product design pass
+
+When the user asks for product design or UX architecture before UI implementation, use:
+
+```bash
+altai autopilot . --design
+```
+
+The project model must be confirmed first. The opt-in pass writes product architecture,
+user flows, screen architecture, design tokens, a UI review, and a design-benchmark brief.
+Read those artifacts before implementing UI. ALTAI does not browse, write application UI,
+launch a browser, or fabricate visual evidence; the host agent performs those steps.
+Complete rendered UI work only after `VisualVerifier` receives real build, screenshot,
+mobile-width, console, and primary-flow evidence.
+
 ## Token mode
 
 Short status lines. No repeated summaries. Diffs over full files. Detailed evidence lives

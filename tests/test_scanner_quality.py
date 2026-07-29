@@ -48,6 +48,19 @@ def test_prose_and_string_literals_are_not_tasks(tmp_path, line):
     assert titles == []
 
 
+def test_python_fixture_strings_and_docstrings_are_not_tasks(tmp_path):
+    (tmp_path / "test_fixture.py").write_text(
+        '"""TODO: documented example"""\n'
+        'source.write_text("# TODO: fixture work\\n", encoding="utf-8")\n'
+        '# TODO: real Python work\n',
+        encoding="utf-8",
+    )
+
+    titles = [t.title for t in scan_project(tmp_path).tasks if t.id.startswith("todo-")]
+
+    assert titles == ["real Python work"]
+
+
 @pytest.mark.parametrize(
     "line, expected",
     [
@@ -69,6 +82,15 @@ def test_markdown_prose_mentioning_todo_is_ignored(tmp_path):
         "The word FIXME means something is broken.\n",
         encoding="utf-8",
     )
+    assert [t.title for t in scan_project(tmp_path).tasks if t.id.startswith("todo-")] == []
+
+
+def test_comment_prose_mentioning_todo_is_ignored(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "# Reconcile discovered TODO tasks during a rescan.\n",
+        encoding="utf-8",
+    )
+
     assert [t.title for t in scan_project(tmp_path).tasks if t.id.startswith("todo-")] == []
 
 

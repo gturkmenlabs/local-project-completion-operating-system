@@ -100,14 +100,25 @@ def build_parser() -> argparse.ArgumentParser:
             "a policy check. Does not implement anything itself.",
         )
     )
+    autopilot.add_argument("project", nargs="?", help="Project root (alternative to --path)")
+    autopilot.add_argument(
+        "--design",
+        action="store_true",
+        help="Generate product architecture, UX, screens, tokens, and a UI review first",
+    )
     autopilot.add_argument("--json", action="store_true")
     autopilot.add_argument("--no-rescan", action="store_true")
+    autopilot.add_argument(
+        "--apply-recommendations",
+        action="store_true",
+        help="Turn safe improvement recommendations into tasks for the host agent to apply",
+    )
 
     return parser
 
 
 def _root(args: argparse.Namespace) -> Path:
-    return Path(getattr(args, "path", ".")).resolve()
+    return Path(getattr(args, "project", None) or getattr(args, "path", ".")).resolve()
 
 
 def _cmd_start(args: argparse.Namespace) -> int:
@@ -269,7 +280,12 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 
 
 def _cmd_autopilot(args: argparse.Namespace) -> int:
-    report = run_autopilot(_root(args), rescan=not args.no_rescan)
+    report = run_autopilot(
+        _root(args),
+        rescan=not args.no_rescan,
+        design=args.design,
+        apply_recommendations=args.apply_recommendations,
+    )
     if args.json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         return report.exit_code
@@ -281,10 +297,18 @@ def _cmd_autopilot(args: argparse.Namespace) -> int:
             print("Politika bayraklari: " + ", ".join(report.policy_flags))
     for item in report.blocked[:3]:
         print(f"Blok: {item['id']} - {item['reason'] or 'sebep kayitli degil'}")
+    if report.applied_recommendations:
+        print("Otomatik goreve alinan oneriler:")
+        for candidate in report.applied_recommendations:
+            print(f"  {candidate['id']}  {candidate['title']}")
     if report.opportunities:
         print("Firsatlar:")
         for candidate in report.opportunities:
             print(f"  {candidate['id']}  [{candidate['score']:+.1f}]  {candidate['title']}")
+    if report.design:
+        print("Tasarim:")
+        for name, path in report.design.items():
+            print(f"  {name}: {path}")
     print(f"Talimat: {report.instruction}")
     return report.exit_code
 

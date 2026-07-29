@@ -95,28 +95,13 @@ low-risk improvement directly serving the declared purpose.
 
 `... autopilot` runs one rescan and reports, in a single call, the next ready task (with
 `related_files` and `memory`), the top open opportunities, and a policy check on the active
-task's own text against `CLAUDE.md`'s stop-and-ask categories (destructive, credentials,
+task's own text against `AGENTS.md`'s stop-and-ask categories (destructive, credentials,
 spending, publish, irreversible product decision). It does not implement anything — the
 loop above still applies to whatever task it returns. Exit code `5` means the returned
 task's own text matched a policy category: stop and get the user's agreement before
 proceeding, the same as any destructive/credential/spending/publish/product decision.
 Calling `autopilot` repeatedly is fine — each call is one bounded rescan, not a loop that
 keeps scanning internally.
-
-## Product design pass
-
-When the user asks for product design or UX architecture before UI implementation, use:
-
-```bash
-altai autopilot . --design
-```
-
-The project model must be confirmed first. The opt-in pass writes product architecture,
-user flows, screen architecture, design tokens, a UI review, and a design-benchmark brief.
-Read those artifacts before implementing UI. ALTAI does not browse, write application UI,
-launch a browser, or fabricate visual evidence; the host agent performs those steps.
-Complete rendered UI work only after `VisualVerifier` receives real build, screenshot,
-mobile-width, console, and primary-flow evidence.
 
 ## Token mode
 

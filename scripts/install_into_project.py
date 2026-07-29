@@ -15,6 +15,7 @@ through a tiny launcher, so the visible footprint is:
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from pathlib import Path
 
@@ -37,13 +38,26 @@ if __name__ == "__main__":
 '''
 
 
-def _copy_tree(src: Path, dst: Path) -> None:
+def _source_version() -> str:
+    for line in (SOURCE_ROOT / "altai" / "__init__.py").read_text(encoding="utf-8").splitlines():
+        if line.startswith("__version__ = "):
+            return line.split("=", 1)[1].strip().strip("\"'")
+    raise RuntimeError("ALTAI version not found")
+
+
+def _copy_tree(src: Path, dst: Path, extra_ignores: tuple[str, ...] = ()) -> None:
     shutil.copytree(
         src,
         dst,
         dirs_exist_ok=True,
         ignore=shutil.ignore_patterns(
-            "__pycache__", "*.pyc", "*.pyo", ".pytest_cache", ".DS_Store", "*.egg-info"
+            "__pycache__",
+            "*.pyc",
+            "*.pyo",
+            ".pytest_cache",
+            ".DS_Store",
+            "*.egg-info",
+            *extra_ignores,
         ),
     )
 
@@ -67,10 +81,40 @@ def _merge_markdown(source: Path, target: Path) -> str:
     return f"appended ALTAI section to {target.name}"
 
 
-def install(target: Path) -> list[str]:
+def _manifest(target: Path, include_caveman: bool) -> Path:
+    features = ["altai", "product-design"]
+    caveman_present = (target / ".codex" / "skills" / "caveman" / "SKILL.md").exists()
+    if include_caveman or caveman_present:
+        features.append("caveman")
+    payload = {
+        "schema_version": 1,
+        "altai_version": _source_version(),
+        "features": features,
+        "commands": {
+            "start": "python .altai/tool/run.py start .",
+            "continue": "python .altai/tool/run.py autopilot . --apply-recommendations",
+            "design": "python .altai/tool/run.py autopilot . --design --apply-recommendations",
+        },
+    }
+    path = target / ".altai" / "integration.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def install(
+    target: Path, *, include_caveman: bool = True, dry_run: bool = False
+) -> list[str]:
     target = target.resolve()
     if target == SOURCE_ROOT:
         raise SystemExit("Hedef, ALTAI kaynak klasorunun kendisi olamaz.")
+    if dry_run:
+        features = "ALTAI + product-design" + (" + caveman" if include_caveman else "")
+        return [
+            f"would install {features} -> {target}",
+            "would preserve and merge AGENTS.md / CLAUDE.md",
+            "would write .altai/integration.json",
+        ]
+
     target.mkdir(parents=True, exist_ok=True)
     actions: list[str] = []
 
@@ -83,7 +127,8 @@ def install(target: Path) -> list[str]:
     for folder in (".claude", ".codex"):
         source = SOURCE_ROOT / folder
         if source.is_dir():
-            _copy_tree(source, target / folder)
+            ignores = ("caveman",) if folder == ".codex" and not include_caveman else ()
+            _copy_tree(source, target / folder, ignores)
             actions.append(f"merged {folder}/")
 
     for name in ("AGENTS.md", "CLAUDE.md"):
@@ -91,21 +136,41 @@ def install(target: Path) -> list[str]:
         if source.is_file():
             actions.append(_merge_markdown(source, target / name))
 
+    manifest = _manifest(target, include_caveman)
+    actions.append(f"integration manifest -> {manifest.relative_to(target)}")
     return actions
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="ALTAI'yi bir projeye kur")
-    parser.add_argument("target", help="Hedef proje klasoru")
+    parser = argparse.ArgumentParser(description="ALTAI'yi bir veya daha fazla projeye kur")
+    parser.add_argument("targets", nargs="+", help="Hedef proje klasoru veya klasorleri")
+    parser.add_argument(
+        "--no-caveman",
+        action="store_true",
+        help="Caveman skill'ini yeni hedeflere kopyalama",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Yapilacaklari goster, dosya yazma",
+    )
     args = parser.parse_args()
 
-    target = Path(args.target)
-    for action in install(target):
-        print(f"  - {action}")
-    print(f"\nALTAI kuruldu: {target.resolve()}")
-    print("Calistir:")
-    print(f"  cd {target}")
-    print("  python .altai/tool/run.py start .")
+    for raw_target in args.targets:
+        target = Path(raw_target)
+        print(f"\n{target.resolve()}")
+        for action in install(
+            target,
+            include_caveman=not args.no_caveman,
+            dry_run=args.dry_run,
+        ):
+            print(f"  - {action}")
+
+    if not args.dry_run:
+        print("\nKurulum tamam.")
+        print("Her hedefte calistir:")
+        print("  python .altai/tool/run.py start .")
+        print("  python .altai/tool/run.py autopilot . --design")
     return 0
 
 
