@@ -1,5 +1,8 @@
+import threading
+
 from altai.autopilot import EXIT_BLOCKED, EXIT_COMPLETE, EXIT_OK, EXIT_POLICY_HOLD, run_autopilot
 from altai.cli import main
+from altai.intelligence.opportunity_finder import load_opportunities
 from altai.memory import load_state
 from altai.orchestrator import (
     add_task,
@@ -125,6 +128,38 @@ def test_promote_creates_a_task_and_removes_the_opportunity(tmp_path):
     assert candidate["id"] not in remaining_ids
 
 
+def test_promote_retry_after_partial_failure_is_idempotent(tmp_path):
+    """Regression: promotion writes project-state.json before it rewrites
+    opportunities.json. If the process dies (disk full, killed) between those
+    two writes, the task exists but its opportunity is still listed as
+    pending. A naive retry would hit "Task already exists" and get stuck
+    forever, unable to finish removing the stale opportunity entry."""
+    root = _bare_project(tmp_path)
+    body = "\n".join(f"    x{i} = {i}" for i in range(80))
+    (root / "app.py").write_text(f"def big():\n{body}\n    return x0\n", encoding="utf-8")
+    report = run_autopilot(root)
+    candidate = next(c for c in report.opportunities if c["kind"] == "large-function")
+
+    # Simulate the crash point: the task got added (add_task, same code path
+    # promote_opportunity uses) but opportunities.json was never rewritten.
+    add_task(
+        root,
+        title=candidate["title"],
+        task_id=candidate["id"],
+        acceptance=candidate["acceptance"],
+        description=candidate["description"],
+    )
+    assert candidate["id"] in {c.id for c in load_opportunities(root)}, (
+        "test setup: opportunity must still be pending to simulate the partial failure"
+    )
+
+    state, task = promote_opportunity(root, candidate["id"])
+
+    assert task.id == candidate["id"]
+    assert state.task(candidate["id"]) is not None
+    assert candidate["id"] not in {c.id for c in load_opportunities(root)}
+
+
 def test_promote_reopens_final_verification(tmp_path):
     root = _bare_project(tmp_path)
     body = "\n".join(f"    x{i} = {i}" for i in range(80))
@@ -167,3 +202,44 @@ def test_cli_autopilot_and_promote(tmp_path, capsys):
     assert main(["promote", candidate_id, "--path", str(root)]) == 0
     capsys.readouterr()
     assert load_state(root).task(candidate_id) is not None
+
+
+def test_concurrent_promotions_do_not_lose_a_candidate(tmp_path):
+    """Regression for a lost-update race: promote_opportunity used to read
+    opportunities.json outside any lock, add the task under a separate lock
+    acquisition, then rewrite the (now stale) list. Two concurrent promotions
+    could both read the same list; the second writer's rewrite would discard
+    the first writer's removal, leaving a promoted task whose opportunity was
+    still listed as pending."""
+    root = _bare_project(tmp_path)
+    body = "\n".join(f"    x{i} = {i}" for i in range(80))
+    (root / "a.py").write_text(f"def big_a():\n{body}\n    return x0\n", encoding="utf-8")
+    (root / "b.py").write_text(f"def big_b():\n{body}\n    return x0\n", encoding="utf-8")
+    report = run_autopilot(root)
+    large = [c for c in report.opportunities if c["kind"] == "large-function"]
+    assert len(large) >= 2
+    ids = [large[0]["id"], large[1]["id"]]
+
+    errors = []
+    barrier = threading.Barrier(len(ids))
+
+    def _promote(opportunity_id):
+        try:
+            barrier.wait(timeout=5)
+            promote_opportunity(root, opportunity_id)
+        except Exception as error:  # noqa: BLE001 - surfaced via `errors` below
+            errors.append(error)
+
+    threads = [threading.Thread(target=_promote, args=(oid,)) for oid in ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    state = load_state(root)
+    for oid in ids:
+        assert state.task(oid) is not None, f"{oid} was not added to the task graph"
+    remaining = {c.id for c in load_opportunities(root)}
+    for oid in ids:
+        assert oid not in remaining, f"{oid} is still listed as a pending opportunity"

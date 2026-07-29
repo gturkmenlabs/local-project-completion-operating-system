@@ -39,7 +39,7 @@ from .models import (
 )
 from .planner import enrich_plan, reconcile_final
 from .research import build_research_brief
-from .scanner import scan_project
+from .scanner import SCAN_RISK_PREFIX, scan_project
 
 AGENT_TASK_FILENAME = "AGENT_TASK.md"
 
@@ -144,6 +144,16 @@ def bootstrap(root: Path, rescan: bool = True) -> ProjectState:
             # re-derives TODO tasks, so a closed gap disappears on its own instead
             # of needing to be marked done by hand.
             base.tasks.extend(gap_tasks(merged_model))
+            if fresh_graph is not None and fresh_graph.truncated:
+                # Same [scan]-prefixed convention scan_project uses for its own
+                # cap: merge_state drops it automatically once a rescan is no
+                # longer truncated, so it never lingers past the condition
+                # that caused it.
+                base.risks.append(
+                    f"{SCAN_RISK_PREFIX} code graph scan was truncated; more source files exist "
+                    "than were analyzed, so related_files/opportunities may be incomplete. "
+                    "Reduce vendored/generated bulk under the project root and re-run `start`."
+                )
             state = merge_state(previous, base)
         else:
             state = previous
@@ -339,6 +349,42 @@ def add_rule(root: Path, condition: str, rule: str, task_id: str = "") -> Path:
     return record_memory_rule(Path(root).resolve(), condition, rule, task_id=task_id)
 
 
+def _add_task_locked(
+    state: ProjectState,
+    title: str,
+    task_id: str | None,
+    depends_on: list[str] | None,
+    acceptance: list[str] | None,
+    description: str,
+) -> tuple[ProjectState, Task]:
+    """Core of :func:`add_task`, assuming the caller already holds ``state_lock``.
+
+    Split out so :func:`promote_opportunity` can read the opportunity list,
+    add the task, and rewrite the opportunity list as one atomic unit under a
+    single lock acquisition — ``state_lock`` is not reentrant, so calling the
+    public :func:`add_task` from inside another locked block would deadlock.
+    """
+    new_id = validate_task_id(task_id or _slug(title, {t.id for t in state.tasks}))
+    if state.task(new_id) is not None:
+        raise ValueError(f"Task '{new_id}' already exists")
+    for dep in depends_on or []:
+        if state.task(dep) is None:
+            raise ValueError(f"Cannot depend on unknown task '{dep}'")
+    task = Task(
+        id=new_id,
+        title=title,
+        description=description,
+        dependencies=list(depends_on or []),
+        acceptance=list(acceptance or []),
+        discovered=False,
+    )
+    state.tasks.append(task)
+    state = enrich_plan(state)
+    # reconcile_final in _persist reopens final-verification if needed.
+    _persist(state, f"add {new_id}")
+    return state, task
+
+
 def add_task(
     root: Path,
     title: str,
@@ -350,25 +396,7 @@ def add_task(
     root = Path(root).resolve()
     with state_lock(root):
         state = load_or_fail(root)
-        new_id = validate_task_id(task_id or _slug(title, {t.id for t in state.tasks}))
-        if state.task(new_id) is not None:
-            raise ValueError(f"Task '{new_id}' already exists")
-        for dep in depends_on or []:
-            if state.task(dep) is None:
-                raise ValueError(f"Cannot depend on unknown task '{dep}'")
-        task = Task(
-            id=new_id,
-            title=title,
-            description=description,
-            dependencies=list(depends_on or []),
-            acceptance=list(acceptance or []),
-            discovered=False,
-        )
-        state.tasks.append(task)
-        state = enrich_plan(state)
-        # reconcile_final in _persist reopens final-verification if needed.
-        _persist(state, f"add {new_id}")
-        return state, task
+        return _add_task_locked(state, title, task_id, depends_on, acceptance, description)
 
 
 def promote_opportunity(root: Path, opportunity_id: str) -> tuple[ProjectState, Task]:
@@ -381,24 +409,44 @@ def promote_opportunity(root: Path, opportunity_id: str) -> tuple[ProjectState, 
     removed from the pending list so it is not offered for promotion twice,
     and its own ID becomes the task ID so a later scan's ``exclude_ids`` still
     recognises it and does not re-suggest it as a fresh candidate.
+
+    Reading the candidate list, adding the task and rewriting the candidate
+    list all happen under one ``state_lock`` acquisition. That makes two
+    *concurrent* promotions safe — the second cannot read a list the first
+    has not yet written back. It does not make a single promotion atomic
+    against a crash or a full disk *between* the two writes: the task can end
+    up persisted while ``opportunities.json`` still lists it as pending. A
+    retry after that must not raise "already exists" and leave the state
+    stuck; it recovers by finishing the second half — removing the candidate
+    — and returning the task that already exists instead of erroring.
     """
     root = Path(root).resolve()
-    candidates = load_opportunities(root)
-    candidate = next((c for c in candidates if c.id == opportunity_id), None)
-    if candidate is None:
-        known = ", ".join(c.id for c in candidates[:10])
-        raise ValueError(
-            f"Unknown opportunity id '{opportunity_id}'. Known ids include: {known}"
+    with state_lock(root):
+        candidates = load_opportunities(root)
+        candidate = next((c for c in candidates if c.id == opportunity_id), None)
+        state = load_or_fail(root)
+
+        existing = state.task(opportunity_id)
+        if existing is not None:
+            if candidate is not None:
+                save_opportunities(root, [c for c in candidates if c.id != opportunity_id])
+            return state, existing
+
+        if candidate is None:
+            known = ", ".join(c.id for c in candidates[:10])
+            raise ValueError(
+                f"Unknown opportunity id '{opportunity_id}'. Known ids include: {known}"
+            )
+        state, task = _add_task_locked(
+            state,
+            title=candidate.title,
+            task_id=candidate.id,
+            depends_on=None,
+            acceptance=candidate.acceptance,
+            description=candidate.description,
         )
-    state, task = add_task(
-        root,
-        title=candidate.title,
-        task_id=candidate.id,
-        acceptance=candidate.acceptance,
-        description=candidate.description,
-    )
-    save_opportunities(root, [c for c in candidates if c.id != opportunity_id])
-    return state, task
+        save_opportunities(root, [c for c in candidates if c.id != opportunity_id])
+        return state, task
 
 
 #: Turkish characters have no ASCII decomposition, so map them explicitly.

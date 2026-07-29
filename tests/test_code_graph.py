@@ -1,3 +1,4 @@
+import altai.intelligence.code_graph as code_graph_module
 from altai.intelligence.code_graph import (
     build_code_graph,
     graph_path,
@@ -118,3 +119,81 @@ def test_bootstrap_persists_a_code_graph(tmp_path):
     graph = load_graph(tmp_path)
     assert graph is not None
     assert "app.py" in graph.files
+
+
+def test_small_scan_is_not_truncated(tmp_path):
+    (tmp_path / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+
+    graph = build_code_graph(tmp_path)
+
+    assert graph.truncated is False
+
+
+def test_truncated_when_candidate_cap_is_hit(tmp_path, monkeypatch):
+    monkeypatch.setattr(code_graph_module, "MAX_CANDIDATE_PATHS", 3)
+    for i in range(6):
+        (tmp_path / f"m{i}.py").write_text("def f():\n    pass\n", encoding="utf-8")
+
+    graph = build_code_graph(tmp_path)
+
+    assert graph.truncated is True
+    assert len(graph.files) <= 3
+
+
+def test_truncated_when_file_cap_is_hit(tmp_path, monkeypatch):
+    monkeypatch.setattr(code_graph_module, "MAX_FILES", 2)
+    for i in range(5):
+        (tmp_path / f"m{i}.py").write_text("def f():\n    pass\n", encoding="utf-8")
+
+    graph = build_code_graph(tmp_path)
+
+    assert graph.truncated is True
+    assert len(graph.files) == 2
+
+
+def test_skipped_list_is_capped_by_name_but_scan_still_completes(tmp_path, monkeypatch):
+    monkeypatch.setattr(code_graph_module, "MAX_FILES", 1)
+    monkeypatch.setattr(code_graph_module, "MAX_SKIPPED_RECORDED", 2)
+    for i in range(10):
+        (tmp_path / f"m{i}.py").write_text("def f():\n    pass\n", encoding="utf-8")
+
+    graph = build_code_graph(tmp_path)
+
+    assert len(graph.skipped) == 2
+    assert graph.truncated is True
+
+
+def test_breadth_first_traversal_reaches_a_shallow_sibling_before_draining_a_deep_subtree(
+    tmp_path, monkeypatch
+):
+    """Regression: a depth-first walk with an unsorted stack could fully
+    exhaust one early subtree (a large, merely-forgotten-to-ignore generated
+    directory) before ever visiting a shallow sibling — so first-party source
+    a few directories over could be silently dropped by the candidate cap
+    without any record of it. Breadth-first, sorted-siblings traversal means a
+    shallow file is discovered before the walk goes deep into any one branch."""
+    monkeypatch.setattr(code_graph_module, "MAX_CANDIDATE_PATHS", 5)
+    deep = tmp_path / "a_deep_vendor_tree"
+    current = deep
+    for level in range(6):
+        current.mkdir(parents=True, exist_ok=True)
+        (current / f"gen{level}.py").write_text("def g():\n    pass\n", encoding="utf-8")
+        current = current / f"level{level}"
+    real = tmp_path / "z_real_source"
+    real.mkdir()
+    (real / "core.py").write_text("def core():\n    pass\n", encoding="utf-8")
+
+    graph = build_code_graph(tmp_path)
+
+    assert any(f.endswith("core.py") for f in graph.files)
+    assert graph.truncated is True
+
+
+def test_truncation_is_surfaced_as_a_project_risk(tmp_path, monkeypatch):
+    monkeypatch.setattr(code_graph_module, "MAX_FILES", 1)
+    for i in range(3):
+        (tmp_path / f"m{i}.py").write_text("def f():\n    pass\n", encoding="utf-8")
+
+    state = bootstrap(tmp_path)
+
+    assert any("code graph scan was truncated" in risk for risk in state.risks)

@@ -34,6 +34,11 @@ GRAPH_SCHEMA_VERSION = 1
 MAX_FILES = 400
 MAX_FILE_BYTES = 400_000
 MAX_SYMBOLS = 4000
+#: Ceiling on paths collected before MAX_FILES is even applied — see
+#: build_code_graph's docstring.
+MAX_CANDIDATE_PATHS = MAX_FILES * 20
+#: Skip entries recorded by name; see _record_skip.
+MAX_SKIPPED_RECORDED = 50
 
 #: Suffix -> language, and whether :mod:`ast` applies. Only Python gets call edges.
 PYTHON_SUFFIXES = frozenset({".py"})
@@ -108,6 +113,13 @@ class CodeGraph:
     symbols: list[Symbol] = field(default_factory=list)
     #: Files that exist but were skipped (too large, unreadable, over the cap).
     skipped: list[str] = field(default_factory=list)
+    #: True when a cap (MAX_CANDIDATE_PATHS, MAX_FILES or MAX_SYMBOLS) was hit,
+    #: meaning source files exist that this scan never even looked at. Checked
+    #: explicitly rather than left implicit in ``skipped`` because ``skipped``
+    #: itself is capped (see MAX_SKIPPED_RECORDED) and, separately, a file
+    #: dropped before the candidate cap is applied never reaches ``skipped``
+    #: at all — silence there must not read as completeness.
+    truncated: bool = False
     schema_version: int = GRAPH_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -116,6 +128,7 @@ class CodeGraph:
             "files": self.files,
             "symbols": [s.to_dict() for s in self.symbols],
             "skipped": self.skipped,
+            "truncated": self.truncated,
             "schema_version": self.schema_version,
         }
 
@@ -141,6 +154,7 @@ class CodeGraph:
             files=[str(f) for f in files],
             symbols=[Symbol.from_dict(item) for item in symbols_data],
             skipped=[str(s) for s in skipped],
+            truncated=bool(data.get("truncated", False)),
             schema_version=schema_version,
         )
 
@@ -179,26 +193,39 @@ def load_graph(root: Path) -> CodeGraph | None:
 
 
 def _iter_source_files(root: Path):
-    stack = [root]
-    while stack:
-        current = stack.pop()
-        try:
-            entries = list(current.iterdir())
-        except OSError:
-            continue
-        for entry in entries:
+    """Breadth-first, siblings sorted at each level.
+
+    A depth-first walk with an unsorted stack can fully exhaust a single
+    early-encountered subtree — a large, merely-forgotten-to-ignore generated
+    or vendor directory — before ever visiting a sibling. Combined with
+    MAX_CANDIDATE_PATHS that meant real first-party source could be dropped
+    silently. Breadth-first, sorted order means every directory at a given
+    depth is at least discovered before the walk goes one level deeper into
+    any of them, so the collection cap in :func:`build_code_graph` runs out
+    across breadth rather than being consumed entirely by one subtree.
+    """
+    level = [root]
+    while level:
+        next_level: list[Path] = []
+        for current in level:
             try:
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir():
-                    if entry.name not in IGNORED_DIRS:
-                        stack.append(entry)
-                    continue
-                if entry.suffix.lower() not in SOURCE_SUFFIXES:
-                    continue
+                entries = sorted(current.iterdir())
             except OSError:
                 continue
-            yield entry
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir():
+                        if entry.name not in IGNORED_DIRS:
+                            next_level.append(entry)
+                        continue
+                    if entry.suffix.lower() not in SOURCE_SUFFIXES:
+                        continue
+                except OSError:
+                    continue
+                yield entry
+        level = next_level
 
 
 class _CallCollector(ast.NodeVisitor):
@@ -297,35 +324,67 @@ def _regex_symbols(relative: str, source: str, suffix: str) -> list[Symbol]:
     return symbols
 
 
+def _record_skip(graph: CodeGraph, relative: str) -> None:
+    """Cap how many skip entries are kept by name.
+
+    Past the cap, files are still (cheaply) skipped — only the *record* of
+    having skipped them stops growing. Without this, a tree with far more
+    matching files than ``MAX_FILES`` (a vendor directory that slipped past
+    ``IGNORED_DIRS``, say) writes an unbounded ``skipped`` list into
+    ``.altai/code-graph.json`` even though the graph itself stayed capped.
+    """
+    if len(graph.skipped) < MAX_SKIPPED_RECORDED:
+        graph.skipped.append(relative)
+
+
 def build_code_graph(root: Path) -> CodeGraph:
     """Walk the tree once and derive every symbol it can find.
 
     Read-only and best-effort throughout: a file that fails to parse is
     recorded in ``skipped`` rather than aborting the whole scan, the same
     tolerance :func:`altai.scanner.scan_project` extends to unreadable files.
+
+    Candidate paths are collected only up to ``MAX_CANDIDATE_PATHS`` *before*
+    sorting or reading anything — ``MAX_FILES`` alone only bounds how many
+    files get parsed, not how many paths the walk collects into memory first,
+    so an under-ignored tree with far more matching files than that could
+    still make the walk itself unbounded.
     """
     root = Path(root).resolve()
     graph = CodeGraph(root=root)
+
+    candidates: list[Path] = []
+    for path in _iter_source_files(root):
+        candidates.append(path)
+        if len(candidates) >= MAX_CANDIDATE_PATHS:
+            # Source files exist beyond this point that the walk never even
+            # reached — distinct from (and can't be recorded in) `skipped`,
+            # which only covers files the walk got as far as looking at.
+            graph.truncated = True
+            break
+    candidates.sort()
+
     count = 0
-    for path in sorted(_iter_source_files(root)):
-        if count >= MAX_FILES or len(graph.symbols) >= MAX_SYMBOLS:
-            graph.skipped.append(path.relative_to(root).as_posix())
-            continue
+    for path in candidates:
         relative = path.relative_to(root).as_posix()
+        if count >= MAX_FILES or len(graph.symbols) >= MAX_SYMBOLS:
+            graph.truncated = True
+            _record_skip(graph, relative)
+            continue
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
-                graph.skipped.append(relative)
+                _record_skip(graph, relative)
                 continue
             source = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
-            graph.skipped.append(relative)
+            _record_skip(graph, relative)
             continue
 
         suffix = path.suffix.lower()
         if suffix in PYTHON_SUFFIXES:
             found = _python_symbols(relative, source)
             if found is None:
-                graph.skipped.append(relative)
+                _record_skip(graph, relative)
                 continue
         else:
             found = _regex_symbols(relative, source, suffix)

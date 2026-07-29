@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..memory import atomic_write_text, init_workspace, workspace_path
+from ..memory import atomic_write_text, init_workspace, state_lock, workspace_path
 
 MEMORY_DIRNAME = "memory"
 RULES_FILENAME = "learned-rules.json"
@@ -117,19 +117,31 @@ def record_rule(root: Path, condition: str, rule: str, task_id: str = "") -> Pat
     Unlike the category files, this is meant to be re-read mechanically (by
     :func:`digest`, and eventually by whatever else wants to check a rule
     before acting), so it stays structured instead of prose.
+
+    Both ``init_memory`` (which can itself create ``learned-rules.json`` if
+    missing) and the read-modify-write are done under the project's own
+    ``state_lock``. Without it, two concurrent ``altai rule`` calls can both
+    read the same list before either writes it back, and the second write
+    silently discards the first call's rule even though the file stays valid
+    JSON — a lost update with no visible error. Racing the *creation* of the
+    file has the same failure mode plus, on Windows, a `PermissionError` from
+    two threads renaming a temp file onto the same destination at once.
     """
     condition = condition.strip()[:MAX_NOTE_CHARS]
     rule = rule.strip()[:MAX_NOTE_CHARS]
     if not condition or not rule:
         raise ValueError("Both condition and rule must be non-empty.")
-    init_memory(root)
-    rules = _load_rules(root)
-    rules.append(
-        {"condition": condition, "rule": rule, "task_id": task_id, "learned_at": _stamp()}
-    )
-    path = rules_path(root)
-    atomic_write_text(path, json.dumps(rules, ensure_ascii=False, indent=2) + "\n", prefix=".rules-")
-    return path
+    with state_lock(root):
+        init_memory(root)
+        rules = _load_rules(root)
+        rules.append(
+            {"condition": condition, "rule": rule, "task_id": task_id, "learned_at": _stamp()}
+        )
+        path = rules_path(root)
+        atomic_write_text(
+            path, json.dumps(rules, ensure_ascii=False, indent=2) + "\n", prefix=".rules-"
+        )
+        return path
 
 
 def load_rules(root: Path) -> list[dict[str, Any]]:

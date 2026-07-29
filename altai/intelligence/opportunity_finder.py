@@ -236,6 +236,21 @@ def _duplication_candidates(model: ProjectModel, graph: CodeGraph) -> list[Oppor
     return candidates
 
 
+def _called_from_a_test(graph: CodeGraph, tested_files: set[str], name: str) -> bool:
+    """True when some symbol declared in a known test file calls *name*.
+
+    ``model.tests`` holds test *file paths*; a symbol's own ``file`` is where
+    it is *declared*, almost never a test file itself. Comparing those two
+    directly (as an earlier version of this function did) compares the wrong
+    sets and is false for virtually every symbol in a real repository — this
+    checks whether the call actually shows up instead. Name-based and
+    unresolved, like every other edge in :mod:`.code_graph`, so a false
+    negative is possible (fixtures, dynamic dispatch, non-Python tests); it
+    only ever suppresses a candidate, never asserts coverage with certainty.
+    """
+    return any(name in symbol.calls for symbol in graph.symbols if symbol.file in tested_files)
+
+
 def _high_fanin_untested_candidates(
     model: ProjectModel, graph: CodeGraph
 ) -> list[OpportunityCandidate]:
@@ -245,7 +260,9 @@ def _high_fanin_untested_candidates(
         if symbol.kind not in ("function", "method"):
             continue
         callers = len(graph.callers_of(symbol.name))
-        if callers < HIGH_FANIN_MIN_CALLERS or symbol.file in tested_files:
+        if callers < HIGH_FANIN_MIN_CALLERS:
+            continue
+        if _called_from_a_test(graph, tested_files, symbol.name):
             continue
         if _excluded_by_non_goals(model, symbol.file, symbol.name):
             continue
@@ -261,11 +278,12 @@ def _high_fanin_untested_candidates(
             OpportunityCandidate(
                 id=_candidate_id("high-fanin-untested", symbol.file, symbol.name),
                 kind="high-fanin-untested",
-                title=f"Add tests for '{symbol.name}' ({callers} callers, no test file found)",
+                title=f"Add tests for '{symbol.name}' ({callers} callers, none found calling it)",
                 description=(
                     f"{symbol.file}:{symbol.line} — '{symbol.name}' has {callers} known "
-                    f"caller(s) but its file is not among the {len(tested_files)} test file(s) "
-                    "the project model found. A change here has no automated check."
+                    f"caller(s), but no symbol in the {len(tested_files)} test file(s) the "
+                    "project model found calls it by name in this scan. Name-based check: it "
+                    "can miss indirect coverage (fixtures, dynamic dispatch, non-Python tests)."
                 ),
                 file=symbol.file,
                 score=total,

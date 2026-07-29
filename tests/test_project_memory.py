@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -105,3 +106,31 @@ def test_orchestrator_learn_and_add_rule_wrappers(tmp_path):
     add_rule(tmp_path, "deploy suggested", "ask the user first", task_id="t1")
     rules = load_rules(tmp_path)
     assert rules[0]["task_id"] == "t1"
+
+
+def test_concurrent_record_rule_does_not_lose_an_entry(tmp_path):
+    """Regression for a lost-update race: record_rule used to read
+    learned-rules.json, append in memory, and write it back with no lock.
+    Two concurrent calls could both read the same list before either wrote
+    it back; the second write silently discarded the first call's rule even
+    though the file stayed valid JSON — no visible error, just missing data."""
+    count = 8
+    errors = []
+    barrier = threading.Barrier(count)
+
+    def _record(i):
+        try:
+            barrier.wait(timeout=5)
+            record_rule(tmp_path, f"condition {i}", f"rule {i}")
+        except Exception as error:  # noqa: BLE001 - surfaced via `errors` below
+            errors.append(error)
+
+    threads = [threading.Thread(target=_record, args=(i,)) for i in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    rules = load_rules(tmp_path)
+    assert {r["condition"] for r in rules} == {f"condition {i}" for i in range(count)}

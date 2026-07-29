@@ -94,12 +94,43 @@ def test_high_fanin_function_with_a_test_file_is_not_flagged(tmp_path):
         "def a():\n    widely_used()\n\ndef b():\n    widely_used()\n\ndef c():\n    widely_used()\n",
         encoding="utf-8",
     )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_core.py").write_text(
+        "from core import widely_used\n\ndef test_widely_used():\n    widely_used()\n",
+        encoding="utf-8",
+    )
     graph = build_code_graph(tmp_path)
-    model = _model(tmp_path, tests=["core.py"])
+    model = _model(tmp_path, tests=["tests/test_core.py"])
 
     candidates = find_opportunities(model, graph)
 
     assert not any(c.kind == "high-fanin-untested" and c.file == "core.py" for c in candidates)
+
+
+def test_high_fanin_function_with_a_test_file_that_never_calls_it_is_still_flagged(tmp_path):
+    """A test file merely existing must not suppress the candidate — only a
+    test that actually calls the symbol does. This is the exact bug found in
+    review: comparing symbol.file against model.tests (disjoint sets, a
+    production path is never literally a test-file path) always matched
+    "not tested" as a no-op and every high-fan-in symbol got flagged
+    regardless of real coverage."""
+    (tmp_path / "core.py").write_text("def widely_used():\n    pass\n", encoding="utf-8")
+    (tmp_path / "callers.py").write_text(
+        "def a():\n    widely_used()\n\ndef b():\n    widely_used()\n\ndef c():\n    widely_used()\n",
+        encoding="utf-8",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_unrelated.py").write_text(
+        "def test_unrelated():\n    assert True\n", encoding="utf-8"
+    )
+    graph = build_code_graph(tmp_path)
+    model = _model(tmp_path, tests=["tests/test_unrelated.py"])
+
+    candidates = find_opportunities(model, graph)
+
+    assert any(c.kind == "high-fanin-untested" and c.file == "core.py" for c in candidates)
 
 
 def test_non_goal_excludes_a_candidate(tmp_path):
