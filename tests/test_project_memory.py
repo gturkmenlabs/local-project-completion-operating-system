@@ -134,3 +134,34 @@ def test_concurrent_record_rule_does_not_lose_an_entry(tmp_path):
     assert not errors, errors
     rules = load_rules(tmp_path)
     assert {r["condition"] for r in rules} == {f"condition {i}" for i in range(count)}
+
+
+def test_concurrent_first_time_record_does_not_lose_an_entry(tmp_path):
+    """Regression for a lost-update race: record() used to call init_memory
+    (which can write a category file's header for the first time) and then
+    append, with no lock around either step. Two concurrent first-time
+    ``altai learn`` calls for the same category could both see the file
+    missing and race to create it — one process's header write landing after
+    the other's append silently erased that entry, with the file still
+    reading as valid text and no visible error."""
+    count = 8
+    errors = []
+    barrier = threading.Barrier(count)
+
+    def _record(i):
+        try:
+            barrier.wait(timeout=5)
+            record(tmp_path, "architecture", f"decision {i}")
+        except Exception as error:  # noqa: BLE001 - surfaced via `errors` below
+            errors.append(error)
+
+    threads = [threading.Thread(target=_record, args=(i,)) for i in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    text = category_path(tmp_path, "architecture").read_text(encoding="utf-8")
+    for i in range(count):
+        assert f"decision {i}" in text

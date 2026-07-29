@@ -39,13 +39,14 @@ def project(tmp_path):
 
 def _finish_prereqs(project):
     complete_task(project, RESEARCH_ID, ["docs read"])
-    complete_task(project, GATES_ID, ["pytest -> ok"])
     # The bare `project` fixture has no README and no run command, so the gap
-    # analyzer opens tasks for both; settle them out of the way of tests that
-    # are exercising unrelated orchestration behaviour.
+    # analyzer opens tasks for both. quality-gates now waits on the
+    # purpose-confirmation gap specifically, so it must be settled first, not
+    # merely out of the way.
     for task in load_state(project).tasks:
         if task.id.startswith("gap-"):
             skip_task(project, task.id, "not relevant to this regression test")
+    complete_task(project, GATES_ID, ["pytest -> ok"])
 
 
 # NEW-1

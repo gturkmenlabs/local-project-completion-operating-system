@@ -63,6 +63,9 @@ def test_done_requires_evidence_and_dependencies(project):
     assert run("done", todo.id, "-e", "x", "--path", str(project)) == 1
 
     assert run("done", "research-project", "-e", "read docs", "--path", str(project)) == 0
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            run("skip", task.id, "-r", "not relevant to this test", "--path", str(project))
     assert run("done", "quality-gates", "-e", "pytest -> ok", "--path", str(project)) == 0
     assert run("done", todo.id, "-e", "pytest -> ok", "--path", str(project)) == 0
 

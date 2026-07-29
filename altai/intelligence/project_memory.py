@@ -88,16 +88,25 @@ def _stamp() -> str:
 
 
 def record(root: Path, category: str, note: str, task_id: str = "") -> Path:
-    """Append one timestamped entry to a category file. Returns its path."""
-    path = category_path(root, category)  # validates before touching disk
-    init_memory(root)
+    """Append one timestamped entry to a category file. Returns its path.
+
+    ``init_memory`` and the append both happen under the project's own
+    ``state_lock``. Without it, two concurrent first-time ``altai learn``
+    calls for the same category can both observe the file missing and race
+    to write its header — one process's header ``write_text()`` can land
+    after the other's append and silently erase it. Same discipline
+    :func:`record_rule` already applies to the rules file.
+    """
+    path = category_path(root, category)  # validates before touching disk/lock
     note = note.strip()[:MAX_NOTE_CHARS]
     if not note:
         raise ValueError("Memory note must not be empty.")
-    tag = f" [{task_id}]" if task_id else ""
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(f"- {_stamp()}{tag}: {note}\n")
-    return path
+    with state_lock(root):
+        init_memory(root)
+        tag = f" [{task_id}]" if task_id else ""
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"- {_stamp()}{tag}: {note}\n")
+        return path
 
 
 def _load_rules(root: Path) -> list[dict[str, Any]]:

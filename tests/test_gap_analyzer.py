@@ -9,8 +9,8 @@ from altai.intelligence.gap_analyzer import (
 )
 from altai.graph import next_ready_task
 from altai.memory import load_state
-from altai.orchestrator import bootstrap, complete_task
-from altai.planner import FINAL_ID, GATES_ID
+from altai.orchestrator import block_task, bootstrap, complete_task
+from altai.planner import FINAL_ID, GATES_ID, RESEARCH_ID
 
 
 def _model(root, **overrides) -> ProjectModel:
@@ -145,6 +145,31 @@ def test_confirm_model_gap_still_gates_final_verification(tmp_path):
 
     final = state.task(FINAL_ID)
     assert CONFIRM_MODEL_ID in final.dependencies
+
+
+def test_quality_gates_waits_on_confirm_model_gap(tmp_path):
+    """The other half of purpose-first: exempting confirm-model from
+    depending on quality-gates only means confirmation doesn't wait on gates.
+    Gates must still wait on confirmation, or nothing actually stops the
+    agent from researching and establishing tooling before it knows what the
+    project is for — the ordering would be cosmetic, not enforced."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    state = bootstrap(tmp_path)
+
+    gates = state.task(GATES_ID)
+    assert CONFIRM_MODEL_ID in gates.dependencies
+
+
+def test_blocked_confirm_model_gap_makes_quality_gates_unreachable(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    bootstrap(tmp_path)
+    complete_task(tmp_path, RESEARCH_ID, ["docs read"])
+    block_task(tmp_path, CONFIRM_MODEL_ID, "waiting on user to confirm purpose")
+
+    state = load_state(tmp_path)
+    ready = next_ready_task(state.tasks)
+
+    assert ready is None or ready.id != GATES_ID
 
 
 def test_final_verification_waits_on_open_gaps(tmp_path):

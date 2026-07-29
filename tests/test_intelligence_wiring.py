@@ -18,13 +18,16 @@ def test_next_brief_includes_related_files_from_code_graph(tmp_path):
     root = _project(tmp_path)
     bootstrap(root)
     complete_task(root, RESEARCH_ID, ["docs read"])
-    complete_task(root, GATES_ID, ["pytest -> ok"])
-    # The bare fixture has no README (gap task) and no TODO markers (baseline
-    # task), so both compete with the task under test for next_ready_task.
-    # Settle them so the hand-added task is unambiguously what is returned.
+    # quality-gates now waits on the purpose-confirmation gap (it must not be
+    # possible to establish gates before the project's purpose is confirmed),
+    # so that has to be settled before quality-gates can complete. The bare
+    # fixture also has no TODO markers, opening a baseline-verification task
+    # that would otherwise compete with the task under test for
+    # next_ready_task. Settle both.
     for stale_id in (CONFIRM_MODEL_ID, "baseline-verification"):
         if load_state(root).task(stale_id) is not None:
             skip_task(root, stale_id, "not relevant to this test")
+    complete_task(root, GATES_ID, ["pytest -> ok"])
     # A hand-added task whose text names no file — the only way related_files
     # is proven to come from the code graph's symbol match, not from a path
     # already sitting in the task's own description (a discovered TODO task's

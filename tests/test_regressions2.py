@@ -37,14 +37,15 @@ def _todo(project):
 
 def _finish_all(project):
     complete_task(project, RESEARCH_ID, ["docs read"])
-    complete_task(project, GATES_ID, ["pytest -> ok"])
-    complete_task(project, _todo(project), ["pytest -> 1 passed"])
     # The bare `project` fixture has no README and no run command, so the gap
-    # analyzer opens tasks for both; settle them out of the way of tests that
-    # are exercising unrelated orchestration behaviour.
+    # analyzer opens tasks for both. quality-gates now waits on the
+    # purpose-confirmation gap specifically, so it must be settled first, not
+    # merely out of the way.
     for task in load_state(project).tasks:
         if task.id.startswith("gap-"):
             skip_task(project, task.id, "not relevant to this regression test")
+    complete_task(project, GATES_ID, ["pytest -> ok"])
+    complete_task(project, _todo(project), ["pytest -> 1 passed"])
     return complete_task(project, FINAL_ID, ["build ok"])
 
 
@@ -256,13 +257,14 @@ def test_graph_reason_prefers_the_broken_edge_over_the_budget():
 # R2-11: skip settles a task so completion stays reachable
 def test_skip_makes_completion_reachable(project):
     complete_task(project, RESEARCH_ID, ["docs read"])
-    complete_task(project, GATES_ID, ["pytest -> ok"])
-    block_task(project, _todo(project), "needs a vendor API key we do not have")
-    skip_task(project, _todo(project), "out of scope for this release")
-    # Settle gap tasks so final-verification can complete.
+    # Settle gap tasks (quality-gates now waits on the purpose-confirmation
+    # gap specifically) before completing quality-gates.
     for task in load_state(project).tasks:
         if task.id.startswith("gap-"):
             skip_task(project, task.id, "not relevant to this regression test")
+    complete_task(project, GATES_ID, ["pytest -> ok"])
+    block_task(project, _todo(project), "needs a vendor API key we do not have")
+    skip_task(project, _todo(project), "out of scope for this release")
     state = complete_task(project, FINAL_ID, ["build ok"])
     assert state.task(FINAL_ID).status == TaskStatus.DONE
     assert "atlandi" in __import__("altai.orchestrator", fromlist=["x"]).status_text(state)
@@ -270,6 +272,9 @@ def test_skip_makes_completion_reachable(project):
 
 def test_skipped_task_satisfies_dependencies(project):
     skip_task(project, RESEARCH_ID, "not applicable")
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            skip_task(project, task.id, "not relevant to this regression test")
     complete_task(project, GATES_ID, ["pytest -> ok"])
     assert load_state(project).task(GATES_ID).status == TaskStatus.DONE
 

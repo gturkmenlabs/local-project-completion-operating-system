@@ -74,8 +74,17 @@ def enrich_plan(state: ProjectState) -> ProjectState:
         final.dependencies = [task.id for task in state.tasks if task.id != FINAL_ID]
 
     gates = by_id.get(GATES_ID)
-    if gates is not None and RESEARCH_ID in by_id and RESEARCH_ID not in gates.dependencies:
-        gates.dependencies.insert(0, RESEARCH_ID)
+    if gates is not None:
+        if RESEARCH_ID in by_id and RESEARCH_ID not in gates.dependencies:
+            gates.dependencies.insert(0, RESEARCH_ID)
+        # The inverse of the exemption above: removing GATES_ID from a
+        # purpose-first task's dependencies only makes confirmation not
+        # *wait on* gates. Gates must still wait on confirmation, or an
+        # unconfirmed purpose does not actually block anything and the whole
+        # point of PURPOSE_FIRST_IDS is just cosmetic ordering.
+        for purpose_id in PURPOSE_FIRST_IDS:
+            if purpose_id in by_id and purpose_id not in gates.dependencies:
+                gates.dependencies.append(purpose_id)
 
     reconcile_final(state)
     return state
