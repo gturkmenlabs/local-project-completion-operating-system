@@ -1,8 +1,9 @@
 # ALTAI
 
 ALTAI is a local project-completion operating system for Claude Code and Codex. It scans a
-repository, forms a task graph, prepares task-specific research instructions, and forces
-implementation through evidence-based quality gates.
+repository, builds a model of what the project is *for*, forms a task graph, prepares
+task-specific research instructions, and forces implementation through evidence-based
+quality gates.
 
 Requires Python 3.10+. No dependencies.
 
@@ -36,6 +37,38 @@ Devam et.
 
 The host agent reads `CLAUDE.md` / `AGENTS.md`, loads the ALTAI skill, and runs the loop.
 
+## Project intelligence layer
+
+Beyond the task graph, ALTAI keeps a model of the project itself under `.altai/`:
+
+* **`project-model.json`** — the project's declared purpose, audience, core flow and
+  non-goals, extracted from README/docs/manifests and confirmed by the host agent.
+* **`code-graph.json`** — a file → class → function → call graph (`ast` for Python, a
+  regex pass for other languages), used to guess which files a task likely touches.
+* **`.altai/memory/`** — five category files (architecture, product-decisions,
+  coding-conventions, failed-approaches, user-preferences) plus a structured
+  `learned-rules.json`, written explicitly by the host agent via `altai learn` / `altai
+  rule` and re-surfaced in every later task's brief.
+* **`opportunities.json`** — scored improvement candidates the repository never named by
+  ID (an oversized function, a name duplicated across files, a heavily-called function no
+  test appears to cover). These are never added to the task graph automatically — a
+  candidate *creates* new intent, unlike a gap, which only closes a contradiction in intent
+  the repository already declared. `altai promote <id>` is the one, deliberate path from
+  candidate to real task.
+
+A **gap analyzer** compares what `project-model.json` declares against what the repository
+actually has — an unconfirmed purpose, a declared test command with no tests, tests with no
+command to run them, an entry point with no run command — and opens a `gap-*` task for each
+contradiction that closes itself once resolved. Confirming the project's purpose is
+exempt from (and gates) `quality-gates`: nothing else proceeds until the project's own
+intent is confirmed, not merely derived from documentation.
+
+`altai autopilot` runs one bounded rescan and reports the single next actionable task
+(with related files and memory attached), the top open opportunities, and a policy check
+on the active task's own text against the stop-and-ask categories below. It does not
+implement, research or test anything itself — that stays with the host agent under the
+normal loop.
+
 ## Commands
 
 | Command | Purpose |
@@ -49,6 +82,11 @@ The host agent reads `CLAUDE.md` / `AGENTS.md`, loads the ALTAI skill, and runs 
 | `altai unblock <id>` | Clear a block and reset attempts (max 2 per task). |
 | `altai skip <id> --reason "..."` | Settle a task as deliberately not done. |
 | `altai add "title" [--depends-on id]` | Add a task by hand. |
+| `altai learn <category> "note"` | Record a project-memory note (architecture, product-decisions, coding-conventions, failed-approaches, user-preferences). |
+| `altai rule "condition" "rule"` | Record a check-before-acting rule. |
+| `altai opportunities [--json]` | List scored, not-yet-adopted improvement candidates. |
+| `altai promote <opportunity-id>` | Turn one opportunity into a real task. |
+| `altai autopilot [--json] [--no-rescan]` | One rescan; next task + opportunities + policy check. Implements nothing itself. |
 
 Substitute `python .altai/tool/run.py` for `altai` when using the vendored install.
 
@@ -64,27 +102,34 @@ Substitute `python .altai/tool/run.py` for `altai` when using the vendored insta
   change being verified does not count — plus satisfied dependencies. A blocked task
   cannot be completed, and `fail` cannot be used to launder one back into progress.
 * **Final verification always covers the whole project.** Any path that leaves unfinished
-  work — `add`, a rescan that finds new markers, a reverted task — reopens it and discards
-  the evidence that described the superseded state.
+  work — `add`, a rescan that finds new markers, a reverted task, a promoted opportunity —
+  reopens it and discards the evidence that described the superseded state.
 * **Retries are bounded.** Three failed attempts blocks a task; a task may be unblocked at
   most twice before the CLI insists on human escalation. Use `skip` to settle work that
   genuinely will not be done, so one hard block cannot make completion unreachable.
-* **Parallel-safe.** Mutations take a lock, so two agents cannot clobber each other's
-  recorded work.
+* **Parallel-safe.** Every mutation — task state, opportunity promotion, memory writes —
+  takes the project's lock, so two agents cannot clobber each other's recorded work.
 
 `next` exits 0 when it hands out a task, 3 when the project is blocked, and 4 when it is
-complete, so a shell loop can branch without parsing the status text.
+complete. `autopilot` adds exit code 5: the returned task's own text matched a
+stop-and-ask category (see Safety) and should not be implemented without the user's
+agreement. A shell loop can branch on any of these without parsing status text.
 
 ## State layout
 
 ```text
 .altai/
 ├── project-state.json   # task graph + progress (managed by the CLI, do not hand-edit)
-├── AGENT_TASK.md        # generated loop instructions for the host agent
-├── research/            # one note per task, written by the agent
-├── evidence/            # append-only evidence per task
-├── runs/log.md          # audit trail of every state change
-└── tool/                # vendored ALTAI package + run.py launcher
+├── project-model.json   # what the project is for, and where that contradicts reality
+├── code-graph.json      # file/symbol/call graph
+├── opportunities.json   # scored, not-yet-adopted improvement candidates
+├── memory/               # architecture, product-decisions, coding-conventions,
+│                         # failed-approaches, user-preferences, learned-rules.json
+├── AGENT_TASK.md         # generated loop instructions for the host agent
+├── research/             # one note per task, written by the agent
+├── evidence/             # append-only evidence per task
+├── runs/log.md           # audit trail of every state change
+└── tool/                 # vendored ALTAI package + run.py launcher
 ```
 
 ## Important limit
@@ -92,12 +137,19 @@ complete, so a shell loop can branch without parsing the status text.
 “No API key” means ALTAI itself never calls a model API. Claude Code or Codex still needs
 its normal signed-in account or configured model access. Web research is performed by the
 host agent, not by this package — ALTAI only tells it what to look for and where to prefer
-looking.
+looking. The same applies to `opportunities.json`: every score is derived mechanically from
+the code graph and project model, never from competitor research or a guessed "market
+value" — ALTAI does not fetch anything on its own.
 
 ## Safety
 
 ALTAI does not silently publish, deploy, delete data, purchase services, expose secrets,
-or make unsupported product decisions.
+or make unsupported product decisions. `altai autopilot` keyword-checks a task's own text
+against five categories — destructive, credentials, spending, publish, irreversible
+product decision — and flags rather than proceeds when one matches (exit code 5). This is
+a hint from the task's own words, not enforcement: ALTAI has no sandbox of its own. Real
+enforcement of what the host agent can do belongs to Claude Code / Codex configuration
+(`.claude/settings.json` permissions and hooks), not to this package.
 
 ## Development
 
