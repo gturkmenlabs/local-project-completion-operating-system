@@ -50,7 +50,7 @@ altai start /path/to/your-project
 Open the project in Claude Code or Codex and say:
 
 ```text
-Devam et.
+Continue.
 ```
 
 The host agent reads `CLAUDE.md` / `AGENTS.md`, loads the ALTAI skill, and runs the loop.
