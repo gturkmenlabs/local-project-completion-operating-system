@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .intelligence.gap_analyzer import CONFIRM_MODEL_ID
 from .models import SATISFIED, ProjectState, Task, TaskStatus
 
 RESEARCH_ID = "research-project"
@@ -7,6 +8,11 @@ GATES_ID = "quality-gates"
 FINAL_ID = "final-verification"
 #: Scaffolding tasks ALTAI always injects. Order matters: research -> gates -> final.
 STANDARD_IDS = (RESEARCH_ID, GATES_ID, FINAL_ID)
+#: Confirming what the project is *for* must happen before quality gates are
+#: established, not after — gates are meaningless against an unconfirmed
+#: purpose. Exempt from the forced GATES_ID dependency every other discovered
+#: task gets.
+PURPOSE_FIRST_IDS = (CONFIRM_MODEL_ID,)
 
 
 def _standard_tasks() -> list[Task]:
@@ -56,7 +62,10 @@ def enrich_plan(state: ProjectState) -> ProjectState:
             task.notes = (
                 f"{task.notes} Dropped dependency on {FINAL_ID} (would create a cycle)."
             ).strip()
-        if GATES_ID not in task.dependencies:
+        if task.id in PURPOSE_FIRST_IDS:
+            # Strip it even if a merge from an earlier run carried it forward.
+            task.dependencies = [dep for dep in task.dependencies if dep != GATES_ID]
+        elif GATES_ID not in task.dependencies:
             task.dependencies.insert(0, GATES_ID)
 
     final = by_id.get(FINAL_ID)

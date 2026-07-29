@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.4.0
+
+Opportunity discovery and a bounded control-layer wrapper, on top of the intelligence
+layer from 0.3.0.
+
+* **Opportunity finder** (`altai/intelligence/opportunity_finder.py`), `.altai/opportunities.json`.
+  Scores candidates the repository never named: a function over ~60 lines, a name declared
+  in 3+ files (possible duplication), a function called from 3+ places with no test file
+  covering it. Every input is mechanically derived from `.altai/code-graph.json` and
+  `project-model.json` — no web search, no competitor analysis, no guessed "user value".
+  Unlike a gap, an opportunity *creates* new intent rather than closing a declared
+  contradiction, which is exactly what `CLAUDE.md`'s contract calls an ambiguous product
+  decision — so candidates are never auto-injected into the task graph. `altai
+  opportunities` lists them; `altai promote <id>` is the one, deliberate path from
+  candidate to real task.
+* **Policy engine** (`altai/policy_engine.py`). Keyword-classifies a task's own text against
+  `CLAUDE.md`'s existing stop-and-ask categories (destructive, credentials, spending,
+  publish, irreversible product decision). It enforces nothing — ALTAI has zero
+  dependencies and no sandbox of its own, so it cannot block a network call or file write
+  the way `.claude/settings.json` permissions and hooks can. It only flags, from a task's
+  own words, that a human should look before the host agent proceeds.
+* **`altai autopilot`** (`altai/autopilot.py`). One bounded rescan that reports the single
+  next actionable task (with `related_files` and `memory`, same as `next`), the top open
+  opportunities, and a policy check on the active task. It does not implement, research or
+  test anything itself — that stays with the host agent under `SKILL.md`'s existing loop.
+  Exit code `5` means the active task's own text tripped a policy category.
+* `SKILL.md` (Claude and Codex copies) documents both.
+
+## 0.3.0
+
+Project intelligence layer: ALTAI now tracks *why* the project exists and *where* things
+live, not only what markers are unresolved.
+
+* **Gap analyzer** (`altai/intelligence/gap_analyzer.py`). `project-model.json` was built
+  and saved on every `start` but nothing ever read it back. It now drives the task graph:
+  an unconfirmed purpose/audience/flow, a declared test command with no tests, tests with
+  no command to run them, or an entry point with no run command each open a `gap-*` task
+  that closes itself once the underlying condition clears, the same way a resolved TODO
+  drops out of a rescan. `final-verification` now waits on these like any other task.
+  `gap-confirm-project-model` is exempt from the forced `quality-gates` dependency every
+  other task gets — confirming what the project is *for* has to come before quality gates
+  are established, not after (`planner.PURPOSE_FIRST_IDS`).
+* **Code graph** (`altai/intelligence/code_graph.py`). Persisted to `.altai/code-graph.json`
+  on every `start`/`status --rescan`. Python is parsed with `ast` for real classes,
+  functions, methods and (unresolved, best-effort) call names; every other supported
+  language gets a regex pass over top-level declarations only. `altai next` now attaches a
+  `related_files` guess — the task's title and description matched against symbol names and
+  file paths — so the host agent has a starting point instead of grepping the whole tree.
+* **Project memory** (`altai/intelligence/project_memory.py`), `.altai/memory/`. Five
+  category files (architecture, product-decisions, coding-conventions, failed-approaches,
+  user-preferences) plus a structured `learned-rules.json`. Nothing is written to it
+  automatically — the host agent records a decision explicitly with the new `altai learn
+  <category> "<note>"` / `altai rule "<condition>" "<rule>"` commands. A digest is folded
+  into `next`'s brief and into `AGENT_TASK.md` once anything has been recorded.
+* **Two new subagent roles**: `altai-analyst` (confirms the interpretive fields of
+  `project-model.json` against the repository) and `altai-architect` (plans a multi-file
+  task using the code graph before any code is written). `SKILL.md` (Claude and Codex
+  copies, kept identical) now points to both.
+
 ## 0.2.3
 
 Found by installing ALTAI into a real Next.js monorepo.

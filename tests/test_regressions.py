@@ -18,7 +18,14 @@ from altai.cli import EXIT_BLOCKED, EXIT_COMPLETE, EXIT_OK, main
 from altai.graph import find_cycles
 from altai.memory import load_state, save_state, state_path
 from altai.models import MAX_UNBLOCKS, SCHEMA_VERSION, ProjectState, Task, TaskStatus
-from altai.orchestrator import add_task, block_task, bootstrap, complete_task, unblock_task
+from altai.orchestrator import (
+    add_task,
+    block_task,
+    bootstrap,
+    complete_task,
+    skip_task,
+    unblock_task,
+)
 from altai.planner import FINAL_ID, GATES_ID, RESEARCH_ID
 
 
@@ -33,6 +40,12 @@ def project(tmp_path):
 def _finish_prereqs(project):
     complete_task(project, RESEARCH_ID, ["docs read"])
     complete_task(project, GATES_ID, ["pytest -> ok"])
+    # The bare `project` fixture has no README and no run command, so the gap
+    # analyzer opens tasks for both; settle them out of the way of tests that
+    # are exercising unrelated orchestration behaviour.
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            skip_task(project, task.id, "not relevant to this regression test")
 
 
 # NEW-1
@@ -197,6 +210,12 @@ def test_marker_cap_is_reported_as_a_risk(tmp_path):
 def test_next_exit_codes_distinguish_blocked_from_complete(project, capsys):
     assert main(["next", "--path", str(project)]) == EXIT_OK
 
+    # The purpose-confirmation gap task is independent of research-project, so
+    # settle it first — otherwise the graph still has ready work and never
+    # reaches EXIT_BLOCKED.
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            skip_task(project, task.id, "not relevant to this regression test")
     block_task(project, RESEARCH_ID, "stuck")
     assert main(["next", "--path", str(project)]) == EXIT_BLOCKED
 

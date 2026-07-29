@@ -7,7 +7,16 @@ import pytest
 from altai.cli import main
 from altai.memory import load_state
 from altai.models import TaskStatus
-from altai.orchestrator import bootstrap
+from altai.orchestrator import bootstrap, skip_task
+
+
+def _settle_gaps(project):
+    """The bare fixture has no README, so the purpose-confirmation gap task is
+    open and, being independent of research-project, sorts before it. Settle
+    it in tests that assume research-project is the only/first ready task."""
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            skip_task(project, task.id, "not relevant to this test")
 
 
 @pytest.fixture()
@@ -71,6 +80,7 @@ def test_progress_survives_rescan_through_cli(project):
 
 def test_fail_increments_and_eventually_blocks(project, capsys):
     bootstrap(project)
+    _settle_gaps(project)
     for _ in range(3):
         run("fail", "research-project", "-r", "boom", "--path", str(project))
     saved = load_state(project)
@@ -93,6 +103,7 @@ def test_block_and_unblock(project):
 
 def test_next_returns_one_task_with_brief(project, capsys):
     bootstrap(project)
+    _settle_gaps(project)
     assert run("next", "--json", "--path", str(project)) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["task"]["id"] == "research-project"

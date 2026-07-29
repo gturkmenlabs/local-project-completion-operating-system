@@ -6,15 +6,21 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .autopilot import run_autopilot
 from .graph import project_phase
+from .intelligence.opportunity_finder import load_opportunities
+from .intelligence.project_memory import CATEGORY_FILES
 from .orchestrator import (
+    add_rule,
     add_task,
     block_task,
     bootstrap,
     complete_task,
     fail_attempt,
+    learn,
     load_or_fail,
     next_brief,
+    promote_opportunity,
     skip_task,
     status_text,
     unblock_task,
@@ -66,6 +72,36 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--depends-on", action="append", default=[])
     add.add_argument("--acceptance", action="append", default=[])
     add.add_argument("--description", default="")
+
+    learn_p = with_path(sub.add_parser("learn", help="Record a project-memory note"))
+    learn_p.add_argument("category", choices=sorted(CATEGORY_FILES))
+    learn_p.add_argument("note")
+    learn_p.add_argument("--task-id", default="")
+
+    rule = with_path(sub.add_parser("rule", help="Record a check-before-acting rule"))
+    rule.add_argument("condition")
+    rule.add_argument("rule")
+    rule.add_argument("--task-id", default="")
+
+    opportunities = with_path(
+        sub.add_parser("opportunities", help="List scored, not-yet-adopted improvement candidates")
+    )
+    opportunities.add_argument("--json", action="store_true")
+
+    promote = with_path(
+        sub.add_parser("promote", help="Turn one opportunity into a real task")
+    )
+    promote.add_argument("opportunity_id")
+
+    autopilot = with_path(
+        sub.add_parser(
+            "autopilot",
+            help="Rescan once and report the single next actionable unit, opportunities and "
+            "a policy check. Does not implement anything itself.",
+        )
+    )
+    autopilot.add_argument("--json", action="store_true")
+    autopilot.add_argument("--no-rescan", action="store_true")
 
     return parser
 
@@ -143,6 +179,12 @@ def _cmd_next(args: argparse.Namespace) -> int:
         print(f"  - {query}")
     print("Oncelik: " + ", ".join(research["preferred_domains"][:5]))
     print(f"Not: {research['note_path']}")
+    if brief.get("related_files"):
+        print("Ilgili dosyalar: " + ", ".join(brief["related_files"]))
+    if brief.get("memory"):
+        print("Proje hafizasi:")
+        for line in brief["memory"].splitlines():
+            print(f"  {line}")
     return 0
 
 
@@ -191,6 +233,62 @@ def _cmd_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_learn(args: argparse.Namespace) -> int:
+    path = learn(_root(args), args.category, args.note, task_id=args.task_id)
+    print(f"Kaydedildi: {path}")
+    return 0
+
+
+def _cmd_rule(args: argparse.Namespace) -> int:
+    path = add_rule(_root(args), args.condition, args.rule, task_id=args.task_id)
+    print(f"Kaydedildi: {path}")
+    return 0
+
+
+def _cmd_opportunities(args: argparse.Namespace) -> int:
+    candidates = load_opportunities(_root(args))
+    if args.json:
+        print(json.dumps([c.to_dict() for c in candidates], ensure_ascii=False, indent=2))
+        return 0
+    if not candidates:
+        print("Firsat yok.")
+        return 0
+    for candidate in candidates:
+        print(f"{candidate.id}  [{candidate.score:+.1f}]  {candidate.title}")
+        print(f"  {candidate.file}")
+    print("\nGercek gorev haline getirmek icin: altai promote <id>")
+    return 0
+
+
+def _cmd_promote(args: argparse.Namespace) -> int:
+    state, task = promote_opportunity(_root(args), args.opportunity_id)
+    write_agent_task(state)
+    print(f"Eklendi: {task.id}")
+    print(status_text(state))
+    return 0
+
+
+def _cmd_autopilot(args: argparse.Namespace) -> int:
+    report = run_autopilot(_root(args), rescan=not args.no_rescan)
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        return report.exit_code
+    print(f"Faz: {report.phase}")
+    if report.task is not None:
+        task = report.task["task"]
+        print(f"Gorev: {task['id']} - {task['title']}")
+        if report.policy_flags:
+            print("Politika bayraklari: " + ", ".join(report.policy_flags))
+    for item in report.blocked[:3]:
+        print(f"Blok: {item['id']} - {item['reason'] or 'sebep kayitli degil'}")
+    if report.opportunities:
+        print("Firsatlar:")
+        for candidate in report.opportunities:
+            print(f"  {candidate['id']}  [{candidate['score']:+.1f}]  {candidate['title']}")
+    print(f"Talimat: {report.instruction}")
+    return report.exit_code
+
+
 HANDLERS = {
     "start": _cmd_start,
     "status": _cmd_status,
@@ -201,6 +299,11 @@ HANDLERS = {
     "unblock": _cmd_unblock,
     "skip": _cmd_skip,
     "add": _cmd_add,
+    "learn": _cmd_learn,
+    "rule": _cmd_rule,
+    "opportunities": _cmd_opportunities,
+    "promote": _cmd_promote,
+    "autopilot": _cmd_autopilot,
 }
 
 

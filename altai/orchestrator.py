@@ -4,6 +4,13 @@ import unicodedata
 from pathlib import Path
 
 from .graph import apply_blocks, blocked_tasks, next_ready_task, project_phase
+from .intelligence.code_graph import build_code_graph, load_graph, related_files, save_graph
+from .intelligence.gap_analyzer import gap_tasks
+from .intelligence.opportunity_finder import find_opportunities, load_opportunities, save_opportunities
+from .intelligence.project_memory import digest as memory_digest
+from .intelligence.project_memory import has_content as memory_has_content
+from .intelligence.project_memory import record as record_memory
+from .intelligence.project_memory import record_rule as record_memory_rule
 from .intelligence.project_model import (
     ProjectModelBuilder,
     load_model,
@@ -73,6 +80,13 @@ Stack: {stack}
 {command} block <id> --reason "needs production credentials"
 {command} unblock <id>
 {command} add "title" --depends-on <id> --acceptance "criterion"
+{command} learn <category> "note"   # architecture|product-decisions|coding-conventions|
+                                     # failed-approaches|user-preferences
+{command} rule "condition" "rule"   # a check-before-acting rule, e.g. after a rejected approach
+{command} opportunities             # scored, not-yet-adopted improvement candidates
+{command} promote <opportunity-id>  # turn one into a real task
+{command} autopilot                 # one rescan; next task + opportunities + policy check
+                                     # (does not implement anything itself)
 ```
 """
 
@@ -88,15 +102,20 @@ def write_agent_task(state: ProjectState) -> Path:
     init_workspace(state.root)
     path = state.root / ".altai" / AGENT_TASK_FILENAME
     max_attempts = max((task.max_attempts for task in state.tasks), default=3)
-    path.write_text(
-        AGENT_TASK_TEMPLATE.format(
-            name=state.name,
-            stack=", ".join(state.stack) or "unknown",
-            command=_command_hint(state.root),
-            max_attempts=max_attempts,
-        ),
-        encoding="utf-8",
+    body = AGENT_TASK_TEMPLATE.format(
+        name=state.name,
+        stack=", ".join(state.stack) or "unknown",
+        command=_command_hint(state.root),
+        max_attempts=max_attempts,
     )
+    if memory_has_content(state.root):
+        body += (
+            "\n## Project memory\n\n"
+            "Read before starting: decisions, rejected approaches and conventions this "
+            "project has already recorded.\n\n"
+            f"{memory_digest(state.root)}\n"
+        )
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -112,18 +131,34 @@ def bootstrap(root: Path, rescan: bool = True) -> ProjectState:
     # lock across it invites the stale-lock breaker to steal it.
     fresh = scan_project(root) if rescan else None
     fresh_model = ProjectModelBuilder(root).build()
+    # Purely derived, so it is rebuilt whole rather than merged like the model.
+    fresh_graph = build_code_graph(root) if rescan else None
     with state_lock(root):
         previous = load_state(root)
         if previous is not None:
             previous = migrate(previous)
+        merged_model = merge_model(load_model(root), fresh_model)
         if fresh is not None or previous is None:
-            state = merge_state(previous, fresh if fresh is not None else scan_project(root))
+            base = fresh if fresh is not None else scan_project(root)
+            # Gaps are re-derived from the merged model, the same way scan_project
+            # re-derives TODO tasks, so a closed gap disappears on its own instead
+            # of needing to be marked done by hand.
+            base.tasks.extend(gap_tasks(merged_model))
+            state = merge_state(previous, base)
         else:
             state = previous
         state = enrich_plan(state)
         apply_blocks(state.tasks)
         save_state(state)
-        save_model(merge_model(load_model(root), fresh_model))
+        save_model(merged_model)
+        if fresh_graph is not None:
+            save_graph(fresh_graph)
+            # Advisory only — never auto-injected into state.tasks (see
+            # opportunity_finder's module docstring for why). A candidate whose
+            # ID already exists as a task (typically: already promoted) is not
+            # suggested again.
+            existing_ids = {task.id for task in state.tasks}
+            save_opportunities(root, find_opportunities(merged_model, fresh_graph, existing_ids))
         write_agent_task(state)
     return state
 
@@ -294,6 +329,16 @@ def skip_task(root: Path, task_id: str, reason: str) -> ProjectState:
         return _persist(state, f"skip {task_id}: {reason}")
 
 
+def learn(root: Path, category: str, note: str, task_id: str = "") -> Path:
+    """Record one entry in `.altai/memory/<category>.md`."""
+    return record_memory(Path(root).resolve(), category, note, task_id=task_id)
+
+
+def add_rule(root: Path, condition: str, rule: str, task_id: str = "") -> Path:
+    """Record one `{condition, rule}` entry in `.altai/memory/learned-rules.json`."""
+    return record_memory_rule(Path(root).resolve(), condition, rule, task_id=task_id)
+
+
 def add_task(
     root: Path,
     title: str,
@@ -324,6 +369,36 @@ def add_task(
         # reconcile_final in _persist reopens final-verification if needed.
         _persist(state, f"add {new_id}")
         return state, task
+
+
+def promote_opportunity(root: Path, opportunity_id: str) -> tuple[ProjectState, Task]:
+    """Turn one scored candidate from `.altai/opportunities.json` into real work.
+
+    This is the only path from `opportunity_finder`'s output into the task
+    graph — never automatic (see the module docstring for why). The resulting
+    task is created with ``discovered=False`` so, like anything added by hand,
+    it survives a rescan even though nothing re-emits it; the opportunity is
+    removed from the pending list so it is not offered for promotion twice,
+    and its own ID becomes the task ID so a later scan's ``exclude_ids`` still
+    recognises it and does not re-suggest it as a fresh candidate.
+    """
+    root = Path(root).resolve()
+    candidates = load_opportunities(root)
+    candidate = next((c for c in candidates if c.id == opportunity_id), None)
+    if candidate is None:
+        known = ", ".join(c.id for c in candidates[:10])
+        raise ValueError(
+            f"Unknown opportunity id '{opportunity_id}'. Known ids include: {known}"
+        )
+    state, task = add_task(
+        root,
+        title=candidate.title,
+        task_id=candidate.id,
+        acceptance=candidate.acceptance,
+        description=candidate.description,
+    )
+    save_opportunities(root, [c for c in candidates if c.id != opportunity_id])
+    return state, task
 
 
 #: Turkish characters have no ASCII decomposition, so map them explicitly.
@@ -357,7 +432,13 @@ def next_brief(state: ProjectState) -> dict | None:
     if task is None:
         return None
     brief = build_research_brief(state.root, task.title, state.stack, task.id)
-    return {"task": task.to_dict(), "research": brief.to_dict()}
+    result = {"task": task.to_dict(), "research": brief.to_dict()}
+    graph = load_graph(state.root)
+    if graph is not None:
+        result["related_files"] = related_files(graph, f"{task.title} {task.description}")
+    if memory_has_content(state.root):
+        result["memory"] = memory_digest(state.root)
+    return result
 
 
 PHASE_LABELS = {

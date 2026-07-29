@@ -3,6 +3,7 @@
 import json
 import os
 import stat
+import sys
 
 import pytest
 
@@ -38,6 +39,12 @@ def _finish_all(project):
     complete_task(project, RESEARCH_ID, ["docs read"])
     complete_task(project, GATES_ID, ["pytest -> ok"])
     complete_task(project, _todo(project), ["pytest -> 1 passed"])
+    # The bare `project` fixture has no README and no run command, so the gap
+    # analyzer opens tasks for both; settle them out of the way of tests that
+    # are exercising unrelated orchestration behaviour.
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            skip_task(project, task.id, "not relevant to this regression test")
     return complete_task(project, FINAL_ID, ["build ok"])
 
 
@@ -139,7 +146,10 @@ def test_corrupt_task_shapes_produce_clean_errors(project, capsys):
         assert "Hata:" in capsys.readouterr().err
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permission bits")
+@pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="Windows or root ignores permission bits",
+)
 def test_permission_error_is_reported_not_raised(project, capsys):
     workspace = project / ".altai"
     mode = workspace.stat().st_mode
@@ -249,6 +259,10 @@ def test_skip_makes_completion_reachable(project):
     complete_task(project, GATES_ID, ["pytest -> ok"])
     block_task(project, _todo(project), "needs a vendor API key we do not have")
     skip_task(project, _todo(project), "out of scope for this release")
+    # Settle gap tasks so final-verification can complete.
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            skip_task(project, task.id, "not relevant to this regression test")
     state = complete_task(project, FINAL_ID, ["build ok"])
     assert state.task(FINAL_ID).status == TaskStatus.DONE
     assert "atlandi" in __import__("altai.orchestrator", fromlist=["x"]).status_text(state)
@@ -274,6 +288,12 @@ def test_scan_risk_is_printed_and_cleared(tmp_path, capsys):
 
 # R2-13: next --json stays machine-readable on every path
 def test_next_json_on_blocked_and_complete(project, capsys):
+    # The purpose-confirmation gap task is independent of research-project, so
+    # settle it first — otherwise the graph still has ready work and never
+    # reaches EXIT_BLOCKED / phase "BLOCKED".
+    for task in load_state(project).tasks:
+        if task.id.startswith("gap-"):
+            skip_task(project, task.id, "not relevant to this regression test")
     block_task(project, RESEARCH_ID, "stuck")
     assert main(["next", "--json", "--path", str(project)]) == EXIT_BLOCKED
     payload = json.loads(capsys.readouterr().out)
