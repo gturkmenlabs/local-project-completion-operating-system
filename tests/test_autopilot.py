@@ -18,7 +18,7 @@ from altai.orchestrator import (
     promote_opportunity,
     skip_task,
 )
-from altai.planner import FINAL_ID, GATES_ID, RESEARCH_ID
+from altai.planner import BENCHMARK_ID, FINAL_ID, GATES_ID, RESEARCH_ID
 
 
 def _bare_project(tmp_path):
@@ -52,6 +52,7 @@ def test_autopilot_flags_a_policy_matching_task(tmp_path):
     run_autopilot(root)
     _settle_confirmation_gap(root)
     complete_task(root, RESEARCH_ID, ["docs read"])
+    complete_task(root, BENCHMARK_ID, ["3 sources recorded, 2 adopted"])
     complete_task(root, GATES_ID, ["pytest -> ok"])
     add_task(root, "delete all rows from the legacy table", task_id="cleanup")
 
@@ -81,6 +82,7 @@ def test_autopilot_reports_complete_when_project_is_done(tmp_path):
     run_autopilot(root)
     _settle_confirmation_gap(root)
     complete_task(root, RESEARCH_ID, ["docs read"])
+    complete_task(root, BENCHMARK_ID, ["3 sources recorded, 2 adopted"])
     complete_task(root, GATES_ID, ["pytest -> ok"])
     complete_task(root, FINAL_ID, ["build ok"])
 
@@ -257,6 +259,7 @@ def test_promote_reopens_final_verification(tmp_path):
     _settle_confirmation_gap(root)
     candidate = next(c for c in report.opportunities if c["kind"] == "large-function")
     complete_task(root, RESEARCH_ID, ["docs read"])
+    complete_task(root, BENCHMARK_ID, ["3 sources recorded, 2 adopted"])
     complete_task(root, GATES_ID, ["pytest -> ok"])
     complete_task(root, FINAL_ID, ["build ok"])
     assert load_state(root).task(FINAL_ID).status.value == "done"

@@ -142,3 +142,29 @@ def test_the_prompt_is_kept_out_of_evidence_lines(tmp_path):
     # every line makes both unreadable.
     assert "<task prompt>" in result.evidence
     assert "a very long prompt" not in result.evidence
+
+
+def test_benchmark_brief_researches_products_not_api_docs(tmp_path):
+    from altai.research import BENCHMARK_TASK_ID, build_research_brief
+
+    brief = build_research_brief(
+        tmp_path,
+        "Benchmark comparable finished products and adopt what is missing",
+        ["Python"],
+        BENCHMARK_TASK_ID,
+        purpose="mobile shopping list app",
+        project_name="shopapp",
+    )
+
+    joined = " ".join(brief.queries)
+    assert "mobile shopping list app" in joined
+    assert "official documentation" not in joined
+    assert "adopt" in brief.instructions and "altai learn" in brief.instructions
+
+
+def test_ordinary_brief_is_unchanged_by_the_benchmark_special_case(tmp_path):
+    from altai.research import build_research_brief
+
+    brief = build_research_brief(tmp_path, "Add pagination", ["Python"], "todo-1")
+
+    assert "official documentation" in brief.queries[0]

@@ -489,7 +489,17 @@ def next_brief(state: ProjectState) -> dict | None:
     task = next_ready_task(state.tasks)
     if task is None:
         return None
-    brief = build_research_brief(state.root, task.title, state.stack, task.id)
+    # The benchmark task researches products, not APIs, so its queries are built
+    # from what the project says it is for rather than from the task's title.
+    model = load_model(state.root)
+    brief = build_research_brief(
+        state.root,
+        task.title,
+        state.stack,
+        task.id,
+        purpose=model.purpose if model else "",
+        project_name=model.name if model else state.name,
+    )
     result = {"task": task.to_dict(), "research": brief.to_dict()}
     graph = load_graph(state.root)
     if graph is not None:

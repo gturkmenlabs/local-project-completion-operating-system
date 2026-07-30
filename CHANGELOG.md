@@ -31,6 +31,15 @@ One command finishes the project, unattended by default.
 * **New exit codes.** `6` execution was requested but no host-agent CLI resolved; `7` the
   iteration or time budget was spent with work still ready (re-running continues from
   exactly there).
+* **`benchmark-competitors` is now part of every plan**, after `research-project`. A task
+  graph derived from a repository can only close contradictions that repository already
+  declares; what comparable finished products do better is the one thing it can never know.
+  The brief is built from the project's confirmed purpose (not the task title, which made
+  "official documentation for <benchmark>" queries), and the acceptance criteria demand
+  adoption rather than a document: three dated sources minimum, every finding marked adopt
+  or reject with its reason, each adopted one recorded via `altai learn product-decisions`
+  *and* added as a task in the same pass, each rejected one recorded so it is not
+  re-researched. `altai run` then implements those tasks in the same loop that created them.
 * **Per-task git checkpoints** (`altai/checkpoint.py`). Each completed task becomes its own
   `altai(<task-id>): <title>` commit carrying its verification evidence; each failed attempt
   is reset back to the previous checkpoint so the next attempt starts clean. `.altai/` is

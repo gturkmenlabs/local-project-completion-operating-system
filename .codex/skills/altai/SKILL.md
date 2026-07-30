@@ -62,6 +62,12 @@ work it did not write. In nested mode it changes nothing — you are the one edi
      if one is available.
 2. Research only what that task needs, using your own web search. Prefer the domains
    listed in the brief. Never fetch a search-engine results page.
+   - `benchmark-competitors` is the exception to "only what the task needs": it is the plan's
+     one outward-looking task. Research finished, maintained products serving this project's
+     purpose, then for every finding decide adopt or reject *and act on it in the same pass* —
+     `... learn product-decisions "<finding>"` plus `... add "<work>"` for each adoption, and a
+     recorded rejection with its reason for each refusal. A benchmark note nobody applied is a
+     failed task, not a completed one.
 3. Save a compressed note to `.altai/research/<task-id>.md`: URL, date, pattern,
    compatibility risk, decision.
 4. Restate the acceptance criteria before editing.

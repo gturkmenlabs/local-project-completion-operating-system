@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from .intelligence.gap_analyzer import CONFIRM_MODEL_ID
 from .models import SATISFIED, ProjectState, Task, TaskStatus
+from .research import BENCHMARK_TASK_ID
 
 RESEARCH_ID = "research-project"
+#: One definition, two users: the planner creates this task and
+#: :mod:`altai.research` keys its product-benchmark brief off the same id.
+BENCHMARK_ID = BENCHMARK_TASK_ID
 GATES_ID = "quality-gates"
 FINAL_ID = "final-verification"
 #: Scaffolding tasks ALTAI always injects. Order matters: research -> gates -> final.
-STANDARD_IDS = (RESEARCH_ID, GATES_ID, FINAL_ID)
+STANDARD_IDS = (RESEARCH_ID, BENCHMARK_ID, GATES_ID, FINAL_ID)
 #: Confirming what the project is *for* must happen before quality gates are
 #: established, not after — gates are meaningless against an unconfirmed
 #: purpose. Exempt from the forced GATES_ID dependency every other discovered
@@ -22,6 +26,30 @@ def _standard_tasks() -> list[Task]:
             title="Research implementation patterns",
             description="Use official documentation first, then inspect maintained reference projects.",
             acceptance=["Sources recorded", "Decisions summarized", "No blind copy-paste"],
+        ),
+        # The task graph can only ever close contradictions the repository
+        # already declares; nothing in a repository says what comparable
+        # finished products do better. This is the one scaffold task whose
+        # answer has to come from outside, and it is worded so its output is
+        # adopted work rather than a document nobody reads.
+        Task(
+            id=BENCHMARK_ID,
+            title="Benchmark comparable finished products and adopt what is missing",
+            description=(
+                "Research current products that already do what this project's confirmed "
+                "purpose describes. Identify what they do that this repository does not, "
+                "decide adopt or reject for each, and turn every adopted finding into work "
+                "in the same pass."
+            ),
+            dependencies=[RESEARCH_ID],
+            acceptance=[
+                "At least three current sources with access dates in .altai/research/"
+                f"{BENCHMARK_ID}.md",
+                "Every finding marked adopt or reject, with the reason",
+                "Each adopted finding recorded via `altai learn product-decisions`",
+                "Each adopted finding added as a task via `altai add` in the same pass",
+                "Rejected findings are recorded too, so they are not re-researched",
+            ],
         ),
         Task(
             id=GATES_ID,

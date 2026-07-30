@@ -157,6 +157,17 @@ Beyond the task graph, ALTAI keeps a model of the project itself under `.altai/`
   applied without an explanation the next task can read. `--no-apply` turns that off, and
   `--safe` leaves candidates matching a stop-and-ask category pending.
 
+A **benchmark task** (`benchmark-competitors`) is part of every plan, right after
+`research-project`. The task graph can only close contradictions the repository already
+declares — nothing in a repository says what comparable finished products do better — so
+this is the one scaffold task whose answer comes from outside. Its brief is built from the
+project's own confirmed purpose rather than from the task title, and its acceptance
+criteria are deliberately about adoption, not documentation: at least three dated sources,
+every finding marked adopt or reject with a reason, each adopted finding recorded with
+`altai learn product-decisions` **and** added as a task in the same pass, each rejected one
+recorded too so nobody researches it twice. Under `altai run` those new tasks are picked up
+by the same loop that created them.
+
 A **gap analyzer** compares what `project-model.json` declares against what the repository
 actually has — an unconfirmed purpose, a declared test command with no tests, tests with no
 command to run them, an entry point with no run command — and opens a `gap-*` task for each
