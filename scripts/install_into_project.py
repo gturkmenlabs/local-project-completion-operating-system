@@ -92,8 +92,10 @@ def _manifest(target: Path, include_caveman: bool) -> Path:
         "features": features,
         "commands": {
             "start": "python .altai/tool/run.py start .",
-            "continue": "python .altai/tool/run.py autopilot . --apply-recommendations",
-            "design": "python .altai/tool/run.py autopilot . --design --apply-recommendations",
+            "run": "python .altai/tool/run.py run .",
+            "continue": "python .altai/tool/run.py run .",
+            "design": "python .altai/tool/run.py run . --design",
+            "safe": "python .altai/tool/run.py run . --safe",
         },
     }
     path = target / ".altai" / "integration.json"
@@ -168,9 +170,9 @@ def main() -> int:
 
     if not args.dry_run:
         print("\nKurulum tamam.")
-        print("Her hedefte calistir:")
-        print("  python .altai/tool/run.py start .")
-        print("  python .altai/tool/run.py autopilot . --design")
+        print("Her hedefte tek komut yeter:")
+        print("  python .altai/tool/run.py run .")
+        print("  python .altai/tool/run.py run . --safe   # onay bekleyen mod")
     return 0
 
 

@@ -7,6 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from install_into_project import BEGIN, END, install, main  # noqa: E402
 
+from altai import __version__  # noqa: E402
+
 
 def test_install_does_not_pollute_project_root(tmp_path):
     install(tmp_path)
@@ -18,14 +20,15 @@ def test_install_does_not_pollute_project_root(tmp_path):
     assert (tmp_path / ".codex" / "skills" / "caveman" / "SKILL.md").exists()
     assert (tmp_path / ".altai" / "tool" / "run.py").exists()
     manifest = json.loads((tmp_path / ".altai" / "integration.json").read_text(encoding="utf-8"))
-    assert manifest["altai_version"] == "0.5.0"
+    # Read the version rather than pinning it here: a hardcoded copy turns every
+    # release into a failing test that says nothing about the installer.
+    assert manifest["altai_version"] == __version__
     assert manifest["features"] == ["altai", "product-design", "caveman"]
-    assert manifest["commands"]["continue"].endswith(
-        "autopilot . --apply-recommendations"
-    )
-    assert manifest["commands"]["design"].endswith(
-        "autopilot . --design --apply-recommendations"
-    )
+    # The installed project's advertised entry point is the single command.
+    assert manifest["commands"]["run"].endswith("run .")
+    assert manifest["commands"]["continue"] == manifest["commands"]["run"]
+    assert manifest["commands"]["design"].endswith("run . --design")
+    assert manifest["commands"]["safe"].endswith("run . --safe")
 
 
 def test_launcher_runs_from_project_root(tmp_path):

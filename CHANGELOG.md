@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.6.0
+
+One command finishes the project, unattended by default.
+
+* **`altai run [path]`** (`altai/loop.py`). Scans, plans, promotes the improvement
+  recommendations into real work, hands each dependency-ready task to the host agent CLI,
+  re-runs the project's own declared checks, records `done`/`fail` through the normal
+  evidence path, sweeps for work the change itself created, and repeats until the project
+  is done, blocked, or the run's budget is spent. Everything the loop previously required a
+  human to drive by hand now happens in a single invocation.
+* **Execution layer** (`altai/executor.py`). Resolves a host agent — `claude`, `codex`, or
+  whatever `ALTAI_AGENT_CMD`/`--agent` names, including a `{prompt}` template — builds one
+  self-contained prompt per task from the existing brief (acceptance criteria, research
+  queries, related files, project memory, and the previous attempt's recorded cause), and
+  runs it headless with a per-task timeout. ALTAI still calls no model API of its own.
+* **The runner verifies, the agent does not self-certify.** Verification commands come from
+  `project-model.json` (`test`, `build`, `lint`, `typecheck`, `check`; never `start`/`dev`,
+  which do not terminate) plus any `--check`. An agent that exits 0 with a red gate gets a
+  failed attempt, and the existing three-attempt budget blocks the task. A project with no
+  declared gate is told so in the report rather than quietly trusting an exit code.
+* **Autonomy levels** (`altai/autonomy.py`). `full` — the default, and `ALTAI_AUTONOMY`
+  overrides it — approves stop-and-ask categories automatically, promotes flagged
+  recommendations, and launches the host agent with its own approval prompts disabled.
+  Every automatic approval is written to `.altai/runs/log.md` and the task's evidence file.
+  `--safe` (`--autonomy guarded`) keeps the previous hold-and-ask behaviour, exit code 5.
+* **Nested runs are refused by default.** Inside Claude Code or Codex, `altai run` hands the
+  task to the caller instead of spawning a second agent underneath the one already driving
+  the loop. `--allow-nested` overrides; `--plan-only` asks for the handoff explicitly.
+* **New exit codes.** `6` execution was requested but no host-agent CLI resolved; `7` the
+  iteration or time budget was spent with work still ready (re-running continues from
+  exactly there).
+* **CI matrix corrected** to Python 3.10–3.12. The workflow tested 3.9, which
+  `requires-python = ">=3.10"` and the package's own `slots=True` dataclasses never
+  supported.
+
 ## 0.5.0
 
 Product design and UX architecture before interface implementation.

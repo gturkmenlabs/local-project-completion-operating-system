@@ -45,15 +45,68 @@ pip install -e .
 altai start /path/to/your-project
 ```
 
-## Use it
+## Use it: one command
 
-Open the project in Claude Code or Codex and say:
-
-```text
-Continue.
+```bash
+altai run              # or: python .altai/tool/run.py run .
 ```
 
-The host agent reads `CLAUDE.md` / `AGENTS.md`, loads the ALTAI skill, and runs the loop.
+That is the whole operating loop, unattended. `run` rescans the repository, promotes its
+own improvement recommendations into real work, hands each dependency-ready task to your
+host agent CLI (`claude` or `codex`), re-runs the project's declared checks itself, records
+`done` or `fail` with evidence, sweeps for work the change just created, and repeats until
+the project is done, blocked, or the run's budget is spent. Nothing needs a prompt per
+task.
+
+```bash
+altai run --safe                    # keep the stop-and-ask holds (see Autonomy)
+altai run --plan-only               # next task only, implement it yourself
+altai run --design                  # write the pre-code design plan first
+altai run --check "npm run e2e"     # add a gate every task must pass
+altai run --agent codex --max-iterations 50 --time-budget 3600
+```
+
+Alternatively, open the project in Claude Code or Codex and say `Continue.` — the host
+agent reads `CLAUDE.md` / `AGENTS.md`, loads the ALTAI skill, and drives the same loop
+itself. Inside a host agent, `altai run` detects the nesting and hands the task to its
+caller instead of spawning a second agent underneath it.
+
+### What the runner does per task
+
+1. `next` picks the single dependency-ready task — the dependency graph decides, not the agent.
+2. One headless agent invocation gets the task, its acceptance criteria, its research
+   queries, the likely files from the code graph, project memory, and the previous
+   attempt's recorded cause.
+3. The **runner** — not the agent — runs the project's verification commands from
+   `project-model.json` (`test`, `build`, `lint`, `typecheck`, `check`) plus any `--check`.
+4. Green agent *and* green gates: `done` with the commands and their exit codes as
+   evidence. Anything else: `fail` with the cause. Three failures block the task, exactly
+   as they do when a human drives the loop.
+
+A project that declares no test or build command says so in the report: with no gate,
+completion rests on the agent's exit code alone, which is the weakest evidence this tool
+accepts.
+
+### Autonomy
+
+`altai run` is unattended by default (`--autonomy full`, or `ALTAI_AUTONOMY=full`):
+
+* a task whose own text matches a stop-and-ask category is approved automatically instead
+  of holding the run,
+* every scored recommendation is promoted into work, flagged ones included,
+* the host agent CLI is launched with its own approval prompts disabled
+  (`--permission-mode bypassPermissions` for `claude`,
+  `--dangerously-bypass-approvals-and-sandbox` for `codex`).
+
+Every automatic approval is written to `.altai/runs/log.md` and to the task's evidence
+file, so removing the pause does not remove the record. `--safe` (`--autonomy guarded`)
+restores the previous behaviour: flagged tasks stop the run with exit code 5 and flagged
+recommendations are left pending.
+
+Full autonomy grants the agent nothing your own CLI and account do not already allow, and
+ALTAI is not a sandbox (see [Safety](#safety)). Run it on a repository whose worst case is
+a bad commit: version-controlled, no production credentials in the working tree, no
+deploy-on-push.
 
 ## Project intelligence layer
 
@@ -116,7 +169,8 @@ build, screenshot, mobile-width, console, and primary-flow evidence.
 (with related files and memory attached), the top open opportunities, and a policy check
 on the active task's own text against the stop-and-ask categories below. It does not
 implement, research or test anything itself — that stays with the host agent under the
-normal loop.
+normal loop. `altai run` is the same pass with the loop closed: it keeps going, launches
+the agent per task, and verifies the result (see [Use it](#use-it-one-command)).
 
 ## Commands
 
@@ -136,6 +190,12 @@ normal loop.
 | `altai opportunities [--json]` | List scored, not-yet-adopted improvement candidates. |
 | `altai promote <opportunity-id>` | Turn one opportunity into a real task. |
 | `altai autopilot [path] [--design] [--json] [--no-rescan]` | Optionally generate the pre-code design plan, then report one task + opportunities + policy check. |
+| `altai run [path]` | The single command: plan, apply recommendations, implement, verify and record every task until the project is done. |
+
+`run` flags: `--safe` / `--autonomy {full,guarded}`, `--plan-only`, `--design`,
+`--no-apply`, `--no-rescan`, `--agent <name\|command\|none>`, `--check <command>`
+(repeatable), `--max-iterations`, `--max-sweeps`, `--agent-timeout`, `--check-timeout`,
+`--time-budget`, `--allow-nested`, `--json`.
 
 Substitute `python .altai/tool/run.py` for `altai` when using the vendored install.
 
@@ -162,7 +222,10 @@ Substitute `python .altai/tool/run.py` for `altai` when using the vendored insta
 `next` exits 0 when it hands out a task, 3 when the project is blocked, and 4 when it is
 complete. `autopilot` adds exit code 5: the returned task's own text matched a
 stop-and-ask category (see Safety) and should not be implemented without the user's
-agreement. A shell loop can branch on any of these without parsing status text.
+agreement. `run` adds two more — 6, execution was requested but no host-agent CLI could be
+resolved, and 7, the iteration or time budget was spent with work still ready (re-running
+continues from exactly there). A shell loop can branch on any of these without parsing
+status text.
 
 ## State layout
 
@@ -184,22 +247,33 @@ agreement. A shell loop can branch on any of these without parsing status text.
 
 ## Important limit
 
-“No API key” means ALTAI itself never calls a model API. Claude Code or Codex still needs
-its normal signed-in account or configured model access. Web research is performed by the
-host agent, not by this package — ALTAI only tells it what to look for and where to prefer
-looking. The same applies to `opportunities.json`: every score is derived mechanically from
-the code graph and project model, never from competitor research or a guessed "market
-value" — ALTAI does not fetch anything on its own.
+“No API key” means ALTAI itself never calls a model API. `altai run` shells out to a host
+agent CLI you already installed and signed in to (`claude`, `codex`, or whatever
+`ALTAI_AGENT_CMD` names); that CLI needs its normal account or configured model access.
+Web research is performed by the host agent, not by this package — ALTAI only tells it what
+to look for and where to prefer looking. The same applies to `opportunities.json`: every
+score is derived mechanically from the code graph and project model, never from competitor
+research or a guessed "market value" — ALTAI does not fetch anything on its own.
 
 ## Safety
 
-ALTAI does not silently publish, deploy, delete data, purchase services, expose secrets,
-or make unsupported product decisions. `altai autopilot` keyword-checks a task's own text
-against five categories — destructive, credentials, spending, publish, irreversible
-product decision — and flags rather than proceeds when one matches (exit code 5). This is
-a hint from the task's own words, not enforcement: ALTAI has no sandbox of its own. Real
-enforcement of what the host agent can do belongs to Claude Code / Codex configuration
-(`.claude/settings.json` permissions and hooks), not to this package.
+`altai autopilot` and `altai run --safe` keyword-check a task's own text against five
+categories — destructive, credentials, spending, publish, irreversible product decision —
+and flag rather than proceed when one matches (exit code 5).
+
+`altai run` at its default `full` autonomy deliberately does not stop there: it approves
+those categories, promotes flagged recommendations, and disables the host agent's own
+approval prompts, because a loop that pauses for confirmation is not unattended. What it
+keeps instead of the pause is the record — every automatic approval names the task and the
+categories in `.altai/runs/log.md` and in `.altai/evidence/<task-id>.md` — and the
+evidence contract: a task still only completes when the project's own checks pass.
+
+Neither mode is enforcement. ALTAI has no sandbox: the spawned agent has exactly the
+permissions its own configuration grants it, and the keyword check is a hint from a task's
+own words, not a verdict on what the change will do. Real enforcement of what the host
+agent can do belongs to Claude Code / Codex configuration (`.claude/settings.json`
+permissions and hooks), not to this package. Use `--safe` where a wrong step is expensive,
+and full autonomy where the worst case is a bad commit.
 
 ## Development
 
