@@ -25,6 +25,30 @@ python .altai/tool/run.py start .
 
 Then read `.altai/AGENT_TASK.md`.
 
+## One command
+
+```bash
+... run          # scan, apply recommendations, implement, verify, record, repeat
+```
+
+`run` is the whole loop below in a single invocation, unattended by default. Called from a
+terminal it launches a host agent CLI per task and verifies the result itself.
+
+Called from *inside* Claude Code or Codex — which is where you are — it detects the nesting
+and hands you the next task instead of spawning a second agent underneath you. So use it as
+your per-iteration entry point: `... run` returns the task (already policy-approved and
+with recommendations promoted), you implement it, you record the outcome, you call it
+again. Do not pass `--allow-nested`; that spawns a nested agent and is for terminal use.
+
+Exit codes: `0` a task was handed to you or the project is done, `3` blocked, `5` guarded
+autonomy held a stop-and-ask task, `6` no agent CLI (terminal use only), `7` budget spent
+with work remaining.
+
+In terminal mode `run` also commits each completed task (`altai(<task-id>): <title>`) and
+resets a failed attempt back to the previous checkpoint. It refuses to do either when the
+working tree was already dirty at the start of the run, so it never commits over or deletes
+work it did not write. In nested mode it changes nothing — you are the one editing.
+
 ## Mandatory loop
 
 1. `... next` — returns exactly one dependency-ready task plus a research brief. It may also
@@ -38,6 +62,12 @@ Then read `.altai/AGENT_TASK.md`.
      if one is available.
 2. Research only what that task needs, using your own web search. Prefer the domains
    listed in the brief. Never fetch a search-engine results page.
+   - `benchmark-competitors` is the exception to "only what the task needs": it is the plan's
+     one outward-looking task. Research finished, maintained products serving this project's
+     purpose, then for every finding decide adopt or reject *and act on it in the same pass* —
+     `... learn product-decisions "<finding>"` plus `... add "<work>"` for each adoption, and a
+     recorded rejection with its reason for each refusal. A benchmark note nobody applied is a
+     failed task, not a completed one.
 3. Save a compressed note to `.altai/research/<task-id>.md`: URL, date, pattern,
    compatibility risk, decision.
 4. Restate the acceptance criteria before editing.
@@ -77,9 +107,14 @@ marker scan that hit its cap or work lost during a state migration.
 `... start .` is safe to re-run at any time: it merges newly discovered TODO/FIXME work
 into the plan and preserves all recorded status, attempts and evidence.
 
-Never open a new feature while a finishable current task remains. Ask the user only for
-destructive actions, secrets, paid actions, publishing, or genuinely unknowable product
-decisions.
+Never open a new feature while a finishable current task remains.
+
+Autonomy decides what to do about destructive actions, secrets, paid actions, publishing,
+and unknowable product decisions. The default `full` autonomy is the operator's standing
+approval for all of them: proceed without asking. Each approval is recorded in
+`.altai/runs/log.md` and the task's evidence file, and you name it in your final summary —
+that report replaces the pause, it does not become another one. Under `--safe` (guarded)
+the run stops with exit code 5 instead and you ask the user.
 
 ## Opportunities and autopilot
 
@@ -92,6 +127,10 @@ Nothing happens to one until you run `... promote <opportunity-id>`, which turns
 normal task (still gated by quality-gates, still counted by `final-verification`, like any
 `add`ed task). Do not promote one without the user's agreement unless it is an obvious,
 low-risk improvement directly serving the declared purpose.
+
+`... run` promotes every recommendation this autonomy level allows before handing out the
+next task, so under the default `full` autonomy you do not need to promote by hand. Under
+`--safe` (guarded), flagged candidates stay pending and the rules above apply.
 
 `... autopilot` runs one rescan and reports, in a single call, the next ready task (with
 `related_files` and `memory`), the top open opportunities, and a policy check on the active

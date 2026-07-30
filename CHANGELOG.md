@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.6.0
+
+One command finishes the project, unattended by default.
+
+* **`altai run [path]`** (`altai/loop.py`). Scans, plans, promotes the improvement
+  recommendations into real work, hands each dependency-ready task to the host agent CLI,
+  re-runs the project's own declared checks, records `done`/`fail` through the normal
+  evidence path, sweeps for work the change itself created, and repeats until the project
+  is done, blocked, or the run's budget is spent. Everything the loop previously required a
+  human to drive by hand now happens in a single invocation.
+* **Execution layer** (`altai/executor.py`). Resolves a host agent — `claude`, `codex`, or
+  whatever `ALTAI_AGENT_CMD`/`--agent` names, including a `{prompt}` template — builds one
+  self-contained prompt per task from the existing brief (acceptance criteria, research
+  queries, related files, project memory, and the previous attempt's recorded cause), and
+  runs it headless with a per-task timeout. ALTAI still calls no model API of its own.
+* **The runner verifies, the agent does not self-certify.** Verification commands come from
+  `project-model.json` (`test`, `build`, `lint`, `typecheck`, `check`; never `start`/`dev`,
+  which do not terminate) plus any `--check`. An agent that exits 0 with a red gate gets a
+  failed attempt, and the existing three-attempt budget blocks the task. A project with no
+  declared gate is told so in the report rather than quietly trusting an exit code.
+* **Autonomy levels** (`altai/autonomy.py`). `full` — the default, and `ALTAI_AUTONOMY`
+  overrides it — approves stop-and-ask categories automatically, promotes flagged
+  recommendations, and launches the host agent with its own approval prompts disabled.
+  Every automatic approval is written to `.altai/runs/log.md` and the task's evidence file.
+  `--safe` (`--autonomy guarded`) keeps the previous hold-and-ask behaviour, exit code 5.
+* **Nested runs are refused by default.** Inside Claude Code or Codex, `altai run` hands the
+  task to the caller instead of spawning a second agent underneath the one already driving
+  the loop. `--allow-nested` overrides; `--plan-only` asks for the handoff explicitly.
+* **New exit codes.** `6` execution was requested but no host-agent CLI resolved; `7` the
+  iteration or time budget was spent with work still ready (re-running continues from
+  exactly there).
+* **`benchmark-competitors` is now part of every plan**, after `research-project`. A task
+  graph derived from a repository can only close contradictions that repository already
+  declares; what comparable finished products do better is the one thing it can never know.
+  The brief is built from the project's confirmed purpose (not the task title, which made
+  "official documentation for <benchmark>" queries), and the acceptance criteria demand
+  adoption rather than a document: three dated sources minimum, every finding marked adopt
+  or reject with its reason, each adopted one recorded via `altai learn product-decisions`
+  *and* added as a task in the same pass, each rejected one recorded so it is not
+  re-researched. `altai run` then implements those tasks in the same loop that created them.
+* **Per-task git checkpoints** (`altai/checkpoint.py`). Each completed task becomes its own
+  `altai(<task-id>): <title>` commit carrying its verification evidence; each failed attempt
+  is reset back to the previous checkpoint so the next attempt starts clean. `.altai/` is
+  ignored by the reset, so state, evidence and the audit trail survive it. Checkpointing is
+  refused outright on a working tree that was already dirty — a commit would bury
+  uncommitted work and a reset would delete it — and a rollback only ever targets a commit
+  this run created. `--commit` / `--no-commit` / `--no-rollback` override.
+* **Budget guards and cost reporting.** `--max-turns` (default 120) caps the agent's own
+  turns per task where its CLI supports one; the `claude` agent now runs with
+  `--output-format json`, so per-task and total cost, turns and session id land in the run
+  report. No flags are assumed for other CLIs.
+* **The design pass runs by default.** `altai run` writes `.altai/design/` whenever the
+  project model is confirmed, and skips with a note when it is not. `--no-design` opts out.
+* **Adopted recommendations reach project memory.** Each promotion writes a
+  `product-decisions` entry naming the candidate and the autonomy level that adopted it, in
+  the same pass that creates the task.
+* **CI matrix corrected** to Python 3.10–3.12. The workflow tested 3.9, which
+  `requires-python = ">=3.10"` and the package's own `slots=True` dataclasses never
+  supported.
+* **`docs/benchmark-2026-07.md`**: the research pass behind this release — what comparable
+  autonomous coding harnesses do, what was adopted, and what was deliberately not (worktree
+  isolation, parallel agents, multi-persona SDLC role-play, a second-agent review gate).
+
 ## 0.5.0
 
 Product design and UX architecture before interface implementation.

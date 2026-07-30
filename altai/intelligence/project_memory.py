@@ -11,9 +11,13 @@ read again on the next task's brief.
 Every write here is explicit. Nothing in this module infers a decision from a
 diff or a commit message — the same restraint :mod:`.project_model` applies to
 interpretive fields. A rule or a decision is only as good as the judgement that
-produced it, so it is only ever written by the host agent choosing to write it,
-through :func:`record` or :func:`record_rule` (wired to ``altai learn`` /
-``altai rule``).
+produced it, so it is only ever written by a caller choosing to write it, through
+:func:`record` or :func:`record_rule` (wired to ``altai learn`` / ``altai rule``).
+
+One caller is not a host agent: :mod:`altai.loop` records a `product-decisions`
+entry for each recommendation it promotes. That is still a decision, not an
+inference — the run decided to adopt the candidate and acted on it in the same
+pass, and the note is what tells a later task why the resulting task exists.
 """
 
 from __future__ import annotations

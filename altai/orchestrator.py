@@ -48,9 +48,17 @@ AGENT_TASK_TEMPLATE = """# ALTAI Autonomous Completion Loop
 Project: {name}
 Stack: {stack}
 
+## One command
+
+`{command} run` does everything below in a single invocation: it applies the pending
+recommendations, hands each dependency-ready task to a host agent, runs this project's own
+checks, and records `done`/`fail` with evidence until the project is finished. Run from a
+terminal it is unattended; run from inside Claude Code or Codex it hands the task to the
+caller instead of spawning a nested agent, so it works as a per-iteration entry point.
+
 ## Loop
 
-1. Run `{command} next` to get the single active task and its research brief.
+1. Run `{command} run` (or `{command} next`) to get the single active task and its research brief.
 2. Research only what that task needs. Prefer official documentation. Save a short,
    source-backed note under `.altai/research/<task-id>.md`.
 3. Write acceptance criteria before editing code.
@@ -72,6 +80,8 @@ Stack: {stack}
 ## Commands
 
 ```
+{command} run                 # single command: plan, implement, verify, record, repeat
+{command} run --safe          # same, but stop on destructive/credential/spending/publish
 {command} status              # current state, no rescan
 {command} start .             # rescan and merge new TODO/FIXME work into the plan
 {command} next                # active task + research brief
@@ -479,7 +489,17 @@ def next_brief(state: ProjectState) -> dict | None:
     task = next_ready_task(state.tasks)
     if task is None:
         return None
-    brief = build_research_brief(state.root, task.title, state.stack, task.id)
+    # The benchmark task researches products, not APIs, so its queries are built
+    # from what the project says it is for rather than from the task's title.
+    model = load_model(state.root)
+    brief = build_research_brief(
+        state.root,
+        task.title,
+        state.stack,
+        task.id,
+        purpose=model.purpose if model else "",
+        project_name=model.name if model else state.name,
+    )
     result = {"task": task.to_dict(), "research": brief.to_dict()}
     graph = load_graph(state.root)
     if graph is not None:

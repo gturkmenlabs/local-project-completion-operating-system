@@ -1,6 +1,6 @@
 from altai.graph import find_cycles
 from altai.models import ProjectState, Task
-from altai.planner import FINAL_ID, GATES_ID, RESEARCH_ID, enrich_plan
+from altai.planner import BENCHMARK_ID, FINAL_ID, GATES_ID, RESEARCH_ID, enrich_plan
 
 
 def _state(tmp_path, *tasks):
@@ -9,7 +9,7 @@ def _state(tmp_path, *tasks):
 
 def test_scaffolding_is_injected(tmp_path):
     state = enrich_plan(_state(tmp_path))
-    assert [task.id for task in state.tasks] == [RESEARCH_ID, GATES_ID, FINAL_ID]
+    assert [task.id for task in state.tasks] == [RESEARCH_ID, BENCHMARK_ID, GATES_ID, FINAL_ID]
 
 
 def test_enrich_plan_is_idempotent(tmp_path):
@@ -31,4 +31,17 @@ def test_plan_has_no_cycles(tmp_path):
 def test_final_verification_gates_on_everything(tmp_path):
     state = enrich_plan(_state(tmp_path, Task(id="todo-1", title="A")))
     final = state.task(FINAL_ID)
-    assert set(final.dependencies) == {RESEARCH_ID, GATES_ID, "todo-1"}
+    assert set(final.dependencies) == {RESEARCH_ID, BENCHMARK_ID, GATES_ID, "todo-1"}
+
+
+def test_benchmark_task_asks_for_adoption_not_a_document(tmp_path):
+    state = enrich_plan(_state(tmp_path))
+    benchmark = state.task(BENCHMARK_ID)
+
+    assert benchmark.dependencies == [RESEARCH_ID]
+    text = " ".join(benchmark.acceptance).lower()
+    # A benchmark whose output is a document nobody applies is the failure mode
+    # this task exists to avoid.
+    assert "adopt" in text and "reject" in text
+    assert "altai add" in text and "altai learn" in text
+    assert "sources" in text

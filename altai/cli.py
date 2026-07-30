@@ -6,8 +6,14 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .autonomy import FULL, GUARDED, Autonomy
 from .autopilot import run_autopilot
 from .graph import project_phase
+from .loop import (
+    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_MAX_SWEEPS,
+    run_project,
+)
 from .intelligence.opportunity_finder import load_opportunities
 from .intelligence.project_memory import CATEGORY_FILES
 from .orchestrator import (
@@ -113,6 +119,107 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Turn safe improvement recommendations into tasks for the host agent to apply",
     )
+
+    run = with_path(
+        sub.add_parser(
+            "run",
+            help="Single command: scan, plan, apply recommendations, implement, verify and "
+            "record every task until the project is done.",
+        )
+    )
+    run.add_argument("project", nargs="?", help="Project root (alternative to --path)")
+    run.add_argument(
+        "--autonomy",
+        choices=[FULL, GUARDED],
+        default=None,
+        help=f"{FULL} (default): approve and apply everything unattended. "
+        f"{GUARDED}: stop on stop-and-ask categories. Overrides ALTAI_AUTONOMY.",
+    )
+    run.add_argument(
+        "--safe",
+        dest="autonomy",
+        action="store_const",
+        const=GUARDED,
+        help=f"Shorthand for --autonomy {GUARDED}",
+    )
+    run.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Report the next task without launching an agent (the caller implements it)",
+    )
+    run.add_argument(
+        "--design",
+        dest="design",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Force the pre-code design plan (attempted by default; skipped with a note "
+        "while the project model is unconfirmed)",
+    )
+    run.add_argument(
+        "--no-design",
+        dest="design",
+        action="store_const",
+        const=False,
+        help="Skip the design pass entirely",
+    )
+    run.add_argument(
+        "--commit",
+        dest="commit",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Commit each completed task (default: on when the working tree is clean)",
+    )
+    run.add_argument(
+        "--no-commit", dest="commit", action="store_const", const=False, help="Never commit"
+    )
+    run.add_argument(
+        "--no-rollback",
+        dest="rollback",
+        action="store_const",
+        const=False,
+        default=None,
+        help="Keep a failed attempt's changes instead of resetting to the last checkpoint",
+    )
+    run.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Per-task ceiling on the agent's own turns where its CLI supports one (0 = none)",
+    )
+    run.add_argument(
+        "--no-apply",
+        dest="apply_recommendations",
+        action="store_false",
+        help="Do not promote improvement recommendations into tasks",
+    )
+    run.add_argument("--no-rescan", action="store_true")
+    run.add_argument(
+        "--agent",
+        default=None,
+        help="Host agent command: a name (claude, codex), a full command line "
+        "(optionally containing {prompt}), or 'none' for plan-only. "
+        "Defaults to ALTAI_AGENT_CMD, then the first CLI found on PATH.",
+    )
+    run.add_argument(
+        "--check",
+        dest="checks",
+        action="append",
+        default=[],
+        help="Extra verification command to run after every task (repeatable)",
+    )
+    run.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
+    run.add_argument("--max-sweeps", type=int, default=DEFAULT_MAX_SWEEPS)
+    run.add_argument("--agent-timeout", type=float, default=None, help="Seconds per task")
+    run.add_argument("--check-timeout", type=float, default=None, help="Seconds per check")
+    run.add_argument("--time-budget", type=float, default=None, help="Seconds for the whole run")
+    run.add_argument(
+        "--allow-nested",
+        action="store_true",
+        help="Spawn an agent even when already running inside one",
+    )
+    run.add_argument("--json", action="store_true")
 
     return parser
 
@@ -313,6 +420,77 @@ def _cmd_autopilot(args: argparse.Namespace) -> int:
     return report.exit_code
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    kwargs: dict[str, object] = {}
+    # Only forward the timeouts the caller actually set, so the executor's own
+    # defaults stay in one place.
+    if args.agent_timeout is not None:
+        kwargs["agent_timeout"] = args.agent_timeout
+    if args.check_timeout is not None:
+        kwargs["check_timeout"] = args.check_timeout
+    if args.max_turns is not None:
+        kwargs["max_turns"] = args.max_turns
+
+    report = run_project(
+        _root(args),
+        autonomy=Autonomy.from_env(args.autonomy),
+        plan_only=args.plan_only,
+        design=args.design,
+        apply_recommendations=args.apply_recommendations,
+        rescan=not args.no_rescan,
+        agent=args.agent,
+        checks=args.checks,
+        commit=args.commit,
+        rollback=args.rollback,
+        max_iterations=args.max_iterations,
+        max_sweeps=args.max_sweeps,
+        time_budget=args.time_budget,
+        allow_nested=args.allow_nested,
+        **kwargs,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        return report.exit_code
+
+    agent = report.plan.get("agent")
+    print(f"Otonomi: {report.autonomy}")
+    print(f"Ajan: {agent['name'] if agent else 'yok (plan-only)'}")
+    if report.plan.get("checks"):
+        print("Dogrulama: " + ", ".join(check["command"] for check in report.plan["checks"]))
+    if report.applied_recommendations:
+        print("Otomatik uygulanan oneriler:")
+        for candidate in report.applied_recommendations:
+            print(f"  {candidate['id']}  {candidate['title']}")
+    for iteration in report.iterations:
+        mark = {"done": "OK", "failed": "HATA", "held": "BEKLEME", "handoff": "DEVIR"}
+        line = f"[{mark.get(iteration.outcome, iteration.outcome)}] {iteration.task_id} - {iteration.title}"
+        if iteration.auto_approved:
+            line += f"  (otomatik onay: {', '.join(iteration.policy_flags)})"
+        if iteration.commit:
+            line += f"  commit {iteration.commit[:9]}"
+        if iteration.rolled_back:
+            line += "  (geri alindi)"
+        print(line)
+        if iteration.reason:
+            print(f"      {iteration.reason}")
+    for note in report.notes:
+        print(f"Not: {note}")
+    for item in report.blocked[:3]:
+        print(f"Blok: {item['id']} - {item['reason'] or 'sebep kayitli degil'}")
+    if report.design:
+        print("Tasarim:")
+        for name, path in report.design.items():
+            print(f"  {name}: {path}")
+    summary = f"Faz: {report.phase}  Biten: {len(report.completed)}  Sure: {report.duration:.0f}s"
+    if report.commits:
+        summary += f"  Commit: {len(report.commits)}"
+    if report.cost_usd is not None:
+        summary += f"  Maliyet: ${report.cost_usd:.2f}"
+    print(summary)
+    print(f"Talimat: {report.instruction}")
+    return report.exit_code
+
+
 HANDLERS = {
     "start": _cmd_start,
     "status": _cmd_status,
@@ -328,6 +506,7 @@ HANDLERS = {
     "opportunities": _cmd_opportunities,
     "promote": _cmd_promote,
     "autopilot": _cmd_autopilot,
+    "run": _cmd_run,
 }
 
 

@@ -26,7 +26,7 @@ from altai.orchestrator import (
     skip_task,
     unblock_task,
 )
-from altai.planner import FINAL_ID, GATES_ID, RESEARCH_ID
+from altai.planner import BENCHMARK_ID, FINAL_ID, GATES_ID, RESEARCH_ID
 
 
 @pytest.fixture()
@@ -39,6 +39,7 @@ def project(tmp_path):
 
 def _finish_prereqs(project):
     complete_task(project, RESEARCH_ID, ["docs read"])
+    complete_task(project, BENCHMARK_ID, ["3 sources recorded, 2 adopted"])
     # The bare `project` fixture has no README and no run command, so the gap
     # analyzer opens tasks for both. quality-gates now waits on the
     # purpose-confirmation gap specifically, so it must be settled first, not
