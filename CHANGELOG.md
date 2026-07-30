@@ -31,9 +31,28 @@ One command finishes the project, unattended by default.
 * **New exit codes.** `6` execution was requested but no host-agent CLI resolved; `7` the
   iteration or time budget was spent with work still ready (re-running continues from
   exactly there).
+* **Per-task git checkpoints** (`altai/checkpoint.py`). Each completed task becomes its own
+  `altai(<task-id>): <title>` commit carrying its verification evidence; each failed attempt
+  is reset back to the previous checkpoint so the next attempt starts clean. `.altai/` is
+  ignored by the reset, so state, evidence and the audit trail survive it. Checkpointing is
+  refused outright on a working tree that was already dirty — a commit would bury
+  uncommitted work and a reset would delete it — and a rollback only ever targets a commit
+  this run created. `--commit` / `--no-commit` / `--no-rollback` override.
+* **Budget guards and cost reporting.** `--max-turns` (default 120) caps the agent's own
+  turns per task where its CLI supports one; the `claude` agent now runs with
+  `--output-format json`, so per-task and total cost, turns and session id land in the run
+  report. No flags are assumed for other CLIs.
+* **The design pass runs by default.** `altai run` writes `.altai/design/` whenever the
+  project model is confirmed, and skips with a note when it is not. `--no-design` opts out.
+* **Adopted recommendations reach project memory.** Each promotion writes a
+  `product-decisions` entry naming the candidate and the autonomy level that adopted it, in
+  the same pass that creates the task.
 * **CI matrix corrected** to Python 3.10–3.12. The workflow tested 3.9, which
   `requires-python = ">=3.10"` and the package's own `slots=True` dataclasses never
   supported.
+* **`docs/benchmark-2026-07.md`**: the research pass behind this release — what comparable
+  autonomous coding harnesses do, what was adopted, and what was deliberately not (worktree
+  isolation, parallel agents, multi-persona SDLC role-play, a second-agent review gate).
 
 ## 0.5.0
 

@@ -147,7 +147,47 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report the next task without launching an agent (the caller implements it)",
     )
-    run.add_argument("--design", action="store_true", help="Write the pre-code design plan first")
+    run.add_argument(
+        "--design",
+        dest="design",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Force the pre-code design plan (attempted by default; skipped with a note "
+        "while the project model is unconfirmed)",
+    )
+    run.add_argument(
+        "--no-design",
+        dest="design",
+        action="store_const",
+        const=False,
+        help="Skip the design pass entirely",
+    )
+    run.add_argument(
+        "--commit",
+        dest="commit",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Commit each completed task (default: on when the working tree is clean)",
+    )
+    run.add_argument(
+        "--no-commit", dest="commit", action="store_const", const=False, help="Never commit"
+    )
+    run.add_argument(
+        "--no-rollback",
+        dest="rollback",
+        action="store_const",
+        const=False,
+        default=None,
+        help="Keep a failed attempt's changes instead of resetting to the last checkpoint",
+    )
+    run.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Per-task ceiling on the agent's own turns where its CLI supports one (0 = none)",
+    )
     run.add_argument(
         "--no-apply",
         dest="apply_recommendations",
@@ -388,6 +428,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         kwargs["agent_timeout"] = args.agent_timeout
     if args.check_timeout is not None:
         kwargs["check_timeout"] = args.check_timeout
+    if args.max_turns is not None:
+        kwargs["max_turns"] = args.max_turns
 
     report = run_project(
         _root(args),
@@ -398,6 +440,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         rescan=not args.no_rescan,
         agent=args.agent,
         checks=args.checks,
+        commit=args.commit,
+        rollback=args.rollback,
         max_iterations=args.max_iterations,
         max_sweeps=args.max_sweeps,
         time_budget=args.time_budget,
@@ -422,6 +466,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
         line = f"[{mark.get(iteration.outcome, iteration.outcome)}] {iteration.task_id} - {iteration.title}"
         if iteration.auto_approved:
             line += f"  (otomatik onay: {', '.join(iteration.policy_flags)})"
+        if iteration.commit:
+            line += f"  commit {iteration.commit[:9]}"
+        if iteration.rolled_back:
+            line += "  (geri alindi)"
         print(line)
         if iteration.reason:
             print(f"      {iteration.reason}")
@@ -433,7 +481,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print("Tasarim:")
         for name, path in report.design.items():
             print(f"  {name}: {path}")
-    print(f"Faz: {report.phase}  Biten: {len(report.completed)}  Sure: {report.duration:.0f}s")
+    summary = f"Faz: {report.phase}  Biten: {len(report.completed)}  Sure: {report.duration:.0f}s"
+    if report.commits:
+        summary += f"  Commit: {len(report.commits)}"
+    if report.cost_usd is not None:
+        summary += f"  Maliyet: ${report.cost_usd:.2f}"
+    print(summary)
     print(f"Talimat: {report.instruction}")
     return report.exit_code
 

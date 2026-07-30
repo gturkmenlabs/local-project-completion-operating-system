@@ -21,6 +21,7 @@ rather than a subprocess.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -78,15 +79,23 @@ class AgentSpec:
         return {"name": self.name, "argv": list(self.argv), "source": self.source}
 
 
-def _claude_argv(bypass: bool) -> list[str]:
-    argv = ["claude", "-p", "--output-format", "text"]
+def _claude_argv(bypass: bool, max_turns: int = 0) -> list[str]:
+    # JSON, not text: it carries total_cost_usd, num_turns and session_id, which
+    # is the only way an unattended run can report what it spent.
+    argv = ["claude", "-p", "--output-format", "json"]
     # `bypassPermissions` is what "unattended" means for Claude Code; without it
     # a headless run stops on the first edit it wants to confirm.
     argv += ["--permission-mode", "bypassPermissions" if bypass else "acceptEdits"]
+    if max_turns > 0:
+        # A per-task turn ceiling is the standard guard against a retry loop
+        # burning an afternoon of budget on one stuck task.
+        argv += ["--max-turns", str(max_turns)]
     return argv
 
 
-def _codex_argv(bypass: bool) -> list[str]:
+def _codex_argv(bypass: bool, max_turns: int = 0) -> list[str]:
+    # No output-format or turn-limit flag is assumed here: an invented flag makes
+    # the CLI refuse to start, which is worse than losing the cost line.
     argv = ["codex", "exec"]
     argv.append("--dangerously-bypass-approvals-and-sandbox" if bypass else "--full-auto")
     return argv
@@ -105,6 +114,7 @@ def detect_agent(
     explicit: str | None = None,
     bypass: bool = True,
     env: dict[str, str] | None = None,
+    max_turns: int = 0,
 ) -> AgentSpec | None:
     """Resolve the agent CLI to drive, or ``None`` when none is available.
 
@@ -125,7 +135,9 @@ def detect_agent(
         # line is taken exactly as written, because the operator spelled it out.
         known = dict(KNOWN_AGENTS)
         if len(parts) == 1 and parts[0] in known:
-            return AgentSpec(name=parts[0], argv=known[parts[0]](bypass), source="explicit")
+            return AgentSpec(
+                name=parts[0], argv=known[parts[0]](bypass, max_turns), source="explicit"
+            )
         return AgentSpec(
             name=Path(parts[0]).name,
             argv=parts,
@@ -134,8 +146,49 @@ def detect_agent(
         )
     for name, builder in KNOWN_AGENTS:
         if shutil.which(name):
-            return AgentSpec(name=name, argv=builder(bypass), source="detected")
+            return AgentSpec(name=name, argv=builder(bypass, max_turns), source="detected")
     return None
+
+
+#: Keys a headless agent may report about its own run, mapped to our field names.
+_METADATA_KEYS = {
+    "total_cost_usd": "cost_usd",
+    "cost_usd": "cost_usd",
+    "num_turns": "turns",
+    "session_id": "session_id",
+}
+
+
+def parse_agent_metadata(stdout: str) -> dict[str, Any]:
+    """Best-effort cost/turn/session extraction from a headless agent's output.
+
+    Claude Code's ``--output-format json`` reports all three. Anything else is
+    parsed if it happens to emit a JSON object and ignored otherwise — an agent
+    that reports nothing must still run, it just runs without a cost line.
+    """
+    text = (stdout or "").strip()
+    if not text or "{" not in text:
+        return {}
+    candidates = [text]
+    # Also try the last line, which is where a JSONL stream puts its summary.
+    last = text.splitlines()[-1].strip()
+    if last != text:
+        candidates.append(last)
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        found = {
+            field_name: payload[key]
+            for key, field_name in _METADATA_KEYS.items()
+            if isinstance(payload.get(key), (int, float, str))
+        }
+        if found:
+            return found
+    return {}
 
 
 @dataclass(slots=True)
@@ -148,6 +201,10 @@ class ExecutionResult:
     output: str = ""
     timed_out: bool = False
     label: str = ""
+    #: Reported by the agent about itself; absent for plain commands.
+    cost_usd: float | None = None
+    turns: int | None = None
+    session_id: str = ""
 
     @property
     def ok(self) -> bool:
@@ -168,6 +225,9 @@ class ExecutionResult:
             "timed_out": self.timed_out,
             "ok": self.ok,
             "output": self.output,
+            "cost_usd": self.cost_usd,
+            "turns": self.turns,
+            "session_id": self.session_id,
         }
 
 
@@ -177,8 +237,11 @@ def _run(
     timeout: float,
     label: str,
     shell: bool = False,
+    display: str | None = None,
 ) -> ExecutionResult:
-    printable = argv if isinstance(argv, str) else shlex.join(argv)
+    # *display* keeps the whole prompt out of evidence lines and commit messages;
+    # what identifies the invocation is the command, not its argument.
+    printable = display or (argv if isinstance(argv, str) else shlex.join(argv))
     started = time.monotonic()
     try:
         completed = subprocess.run(  # noqa: S603 - launching the operator's own CLI is the point
@@ -209,12 +272,20 @@ def _run(
             output=str(error),
             label=label,
         )
+    # Parse before truncating: the JSON summary is the whole stdout, and the tail
+    # that goes into the report would cut it in half.
+    metadata = parse_agent_metadata(completed.stdout) if label.startswith("agent:") else {}
+    cost = metadata.get("cost_usd")
+    turns = metadata.get("turns")
     return ExecutionResult(
         command=printable,
         exit_code=completed.returncode,
         duration=time.monotonic() - started,
         output=_tail(f"{completed.stdout}\n{completed.stderr}"),
         label=label,
+        cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
+        turns=int(turns) if isinstance(turns, (int, float)) else None,
+        session_id=str(metadata.get("session_id", "")),
     )
 
 
@@ -225,7 +296,13 @@ def run_agent(
     timeout: float = DEFAULT_AGENT_TIMEOUT,
 ) -> ExecutionResult:
     """Run one headless host-agent invocation for one task."""
-    return _run(spec.command_for(prompt), Path(root), timeout, label=f"agent:{spec.name}")
+    return _run(
+        spec.command_for(prompt),
+        Path(root),
+        timeout,
+        label=f"agent:{spec.name}",
+        display=f"{shlex.join(spec.argv)} <task prompt>",
+    )
 
 
 def project_checks(commands: dict[str, str] | None, extra: list[str] | None = None) -> list[tuple[str, str]]:

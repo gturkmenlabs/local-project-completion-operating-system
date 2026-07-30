@@ -1,5 +1,6 @@
 import json
 import shlex
+import subprocess
 import sys
 
 import pytest
@@ -24,6 +25,17 @@ pathlib.Path("agent-ran.log").open("a", encoding="utf-8").write(sys.argv[-1][:80
 sys.exit({code})
 """
 
+#: Writes a file named after the task it was given, so a test can prove a commit
+#: kept the work and a rollback discarded it.
+EDITING_AGENT_SCRIPT = """
+import json, pathlib, re, sys
+prompt = sys.argv[-1]
+task = re.search(r"TASK (\\S+):", prompt).group(1)
+pathlib.Path(task + ".txt").write_text("written by the agent\\n", encoding="utf-8")
+print(json.dumps({{"result": "ok", "total_cost_usd": 0.25, "num_turns": 3, "session_id": "s-1"}}))
+sys.exit({code})
+"""
+
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
@@ -40,10 +52,38 @@ def _project(tmp_path):
     return tmp_path
 
 
-def _agent(tmp_path, exit_code=0):
-    script = tmp_path / f"agent_{exit_code}.py"
-    script.write_text(AGENT_SCRIPT.format(code=exit_code), encoding="utf-8")
+def _agent(tmp_path, exit_code=0, template=AGENT_SCRIPT, name="agent"):
+    # Kept outside the project root: an agent script committed by the run itself
+    # would make the "what did the agent change" assertions meaningless.
+    script = tmp_path.parent / f"{name}_{tmp_path.name}_{exit_code}.py"
+    script.write_text(template.format(code=exit_code), encoding="utf-8")
     return shlex.join([sys.executable, str(script)])
+
+
+def _editing_agent(tmp_path, exit_code=0):
+    return _agent(tmp_path, exit_code, template=EDITING_AGENT_SCRIPT, name="editor")
+
+
+def _git(root, *args):
+    return subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _repo(tmp_path):
+    """A project fixture that is also a clean git repository."""
+    root = _project(tmp_path)
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.com")
+    (root / ".gitignore").write_text(".altai/\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "initial")
+    return root
 
 
 def _run(root, **kwargs):
@@ -281,6 +321,103 @@ def test_cli_run_safe_flag_selects_guarded_autonomy(tmp_path, capsys):
     assert exit_code == EXIT_POLICY_HOLD
     assert payload["autonomy"] == GUARDED
     assert payload["iterations"][-1]["outcome"] == "held"
+
+
+def test_each_completed_task_becomes_its_own_commit(tmp_path):
+    root = _repo(tmp_path)
+
+    report = _run(root, agent=_editing_agent(tmp_path), max_iterations=3)
+
+    done = [item for item in report.iterations if item.outcome == "done"]
+    assert done and all(item.commit for item in done)
+    assert report.checkpoint["enabled"] is True and report.checkpoint["rollback"] is True
+    subjects = _git(root, "log", "--pretty=%s").stdout
+    assert f"altai({done[0].task_id})" in subjects
+    assert len(report.commits) == len(done)
+
+
+def test_a_failed_attempt_is_rolled_back_to_the_checkpoint(tmp_path):
+    root = _repo(tmp_path)
+
+    report = _run(root, agent=_editing_agent(tmp_path, exit_code=1), max_iterations=2)
+
+    failed = report.iterations[0]
+    assert failed.outcome == "failed" and failed.rolled_back is True
+    assert not (root / f"{failed.task_id}.txt").exists(), "the half-finished attempt survived"
+    assert _git(root, "status", "--porcelain").stdout.strip() == ""
+
+
+def test_no_rollback_keeps_the_failed_attempt_for_inspection(tmp_path):
+    root = _repo(tmp_path)
+
+    report = _run(root, agent=_editing_agent(tmp_path, exit_code=1), rollback=False, max_iterations=1)
+
+    failed = report.iterations[0]
+    assert failed.rolled_back is False
+    assert (root / f"{failed.task_id}.txt").exists()
+
+
+def test_uncommitted_work_disables_checkpointing(tmp_path):
+    root = _repo(tmp_path)
+    (root / "my-wip.py").write_text("half of my own change\n", encoding="utf-8")
+
+    report = _run(root, agent=_agent(tmp_path), max_iterations=1)
+
+    assert report.checkpoint["enabled"] is False
+    assert any("already dirty" in note for note in report.notes)
+    assert (root / "my-wip.py").exists()
+
+
+def test_no_commit_flag_leaves_history_alone(tmp_path):
+    root = _repo(tmp_path)
+    before = _git(root, "rev-parse", "HEAD").stdout.strip()
+
+    report = _run(root, agent=_editing_agent(tmp_path), commit=False, max_iterations=2)
+
+    assert report.commits == []
+    assert _git(root, "rev-parse", "HEAD").stdout.strip() == before
+
+
+def test_agent_reported_cost_and_turns_are_totalled(tmp_path):
+    root = _repo(tmp_path)
+
+    report = _run(root, agent=_editing_agent(tmp_path), max_iterations=2)
+
+    assert report.iterations[0].cost_usd == 0.25
+    assert report.iterations[0].turns == 3
+    assert report.cost_usd == round(0.25 * len(report.iterations), 4)
+
+
+def test_applied_recommendations_are_written_to_project_memory(tmp_path):
+    root = _project(tmp_path)
+    body = "\n".join(f"    x{i} = {i}" for i in range(80))
+    (root / "big.py").write_text(f"def big():\n{body}\n    return x0\n", encoding="utf-8")
+
+    report = _run(root, plan_only=True)
+
+    promoted = report.applied_recommendations[0]
+    memory = (workspace_path(root) / "memory" / "product-decisions.md").read_text(encoding="utf-8")
+    assert "auto-applied recommendation" in memory
+    assert promoted["title"] in memory
+    assert promoted["id"] in memory
+
+
+def test_design_pass_is_attempted_by_default_and_can_be_switched_off(tmp_path):
+    root = _project(tmp_path)
+
+    attempted = _run(root, plan_only=True)
+    assert any("design pass skipped" in note for note in attempted.notes)
+
+    off = _run(root, plan_only=True, design=False, rescan=False)
+    assert not any("design pass" in note for note in off.notes)
+
+
+def test_max_turns_reaches_a_known_agent_cli():
+    from altai.executor import detect_agent
+
+    spec = detect_agent("claude", env={}, max_turns=42)
+
+    assert "--max-turns" in spec.argv and "42" in spec.argv
 
 
 def test_autonomy_env_default_is_full_and_overridable(monkeypatch):

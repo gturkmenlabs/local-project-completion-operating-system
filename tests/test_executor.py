@@ -131,3 +131,14 @@ def test_prompt_carries_the_contract_and_the_previous_failure(tmp_path):
     assert "attempt 2: import error" in prompt
     # The runner records outcomes; an agent that also records them double-counts.
     assert "Do NOT run `altai done`" in prompt
+
+
+def test_the_prompt_is_kept_out_of_evidence_lines(tmp_path):
+    spec = AgentSpec(name="echo", argv=[sys.executable, "-c", "pass"])
+
+    result = run_agent(spec, "a very long prompt " * 200, tmp_path, timeout=30)
+
+    # Evidence goes into commit messages and .altai/evidence/; a 4 KB prompt in
+    # every line makes both unreadable.
+    assert "<task prompt>" in result.evidence
+    assert "a very long prompt" not in result.evidence

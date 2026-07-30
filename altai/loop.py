@@ -35,6 +35,7 @@ from typing import Any
 
 from .autonomy import Autonomy
 from .autopilot import classify_task_dict
+from .checkpoint import Checkpointer
 from .design import generate_design_plan
 from .executor import (
     DEFAULT_AGENT_TIMEOUT,
@@ -49,6 +50,7 @@ from .executor import (
 )
 from .graph import blocked_tasks, project_phase
 from .intelligence.opportunity_finder import load_opportunities
+from .intelligence.project_memory import record as record_memory
 from .intelligence.project_model import load_model
 from .memory import append_run_log, record_evidence
 from .models import ProjectState
@@ -65,6 +67,10 @@ EXIT_INCOMPLETE = 7
 
 #: How many tasks one `altai run` will attempt before handing control back.
 DEFAULT_MAX_ITERATIONS = 25
+#: Per-task ceiling on the agent's own turns, where its CLI supports one. An
+#: unattended run's first line of defence against one stuck task consuming the
+#: whole budget; 0 removes the ceiling.
+DEFAULT_MAX_TURNS = 120
 #: How many times an empty queue triggers a fresh scan before the run concludes.
 #: A finished task often creates the next one (a new TODO, a new opportunity);
 #: an unbounded sweep would let the project generate work forever.
@@ -115,6 +121,12 @@ class Iteration:
     checks: list[dict[str, Any]] = field(default_factory=list)
     agent: dict[str, Any] | None = None
     reason: str = ""
+    #: Commit this task produced, when checkpointing is on.
+    commit: str = ""
+    #: Whether a failed attempt's changes were discarded back to the checkpoint.
+    rolled_back: bool = False
+    cost_usd: float | None = None
+    turns: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -130,19 +142,27 @@ class RunReport:
     blocked: list[dict[str, str]] = field(default_factory=list)
     design: dict[str, str] = field(default_factory=dict)
     plan: dict[str, Any] = field(default_factory=dict)
+    checkpoint: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     instruction: str = ""
     duration: float = 0.0
+    #: Sum of what the agent reported spending, when it reports anything.
+    cost_usd: float | None = None
     exit_code: int = EXIT_OK
 
     @property
     def completed(self) -> list[Iteration]:
         return [item for item in self.iterations if item.outcome == "done"]
 
+    @property
+    def commits(self) -> list[str]:
+        return [item.commit for item in self.iterations if item.commit]
+
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["iterations"] = [item.to_dict() for item in self.iterations]
         data["completed"] = len(self.completed)
+        data["commits"] = self.commits
         data.pop("exit_code")
         return data
 
@@ -169,6 +189,18 @@ def _apply_recommendations(
         if flags and not autonomy.promotes_flagged:
             continue
         state, _ = promote_opportunity(root, candidate.id)
+        # Recorded *and* acted on, in that order and in the same run: a
+        # recommendation that only lands in memory is one nobody applies, and one
+        # that is only applied leaves the next run no idea why the task exists.
+        record_memory(
+            root,
+            "product-decisions",
+            f"auto-applied recommendation ({candidate.kind}): {candidate.title}. "
+            f"Promoted to a task in the same run under '{autonomy.level}' autonomy"
+            + (f"; policy flags: {', '.join(flags)}" if flags else "")
+            + ".",
+            task_id=candidate.id,
+        )
         if flags:
             note = autonomy.approval_note(candidate.id, flags)
             append_run_log(root, note)
@@ -196,11 +228,14 @@ def run_project(
     *,
     autonomy: Autonomy | None = None,
     plan_only: bool = False,
-    design: bool = False,
+    design: bool | None = None,
     apply_recommendations: bool = True,
     rescan: bool = True,
     agent: str | None = None,
     checks: list[str] | None = None,
+    commit: bool | None = None,
+    rollback: bool | None = None,
+    max_turns: int = DEFAULT_MAX_TURNS,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     max_sweeps: int = DEFAULT_MAX_SWEEPS,
     agent_timeout: float = DEFAULT_AGENT_TIMEOUT,
@@ -217,7 +252,10 @@ def run_project(
     state = bootstrap(root, rescan=rescan)
 
     design_paths: dict[str, str] = {}
-    if design:
+    if design is not False:
+        # Default (``None``) is "attempt it": the design plan is deterministic,
+        # cheap and inspectable, and a project whose model is not yet confirmed
+        # just gets the note instead of the artifacts.
         try:
             design_paths = {name: str(path) for name, path in generate_design_plan(root).items()}
         except ValueError as error:
@@ -235,7 +273,9 @@ def run_project(
                 "spawning a nested one (--allow-nested overrides)"
             )
         else:
-            agent_spec = detect_agent(agent, bypass=autonomy.bypass_agent_approvals)
+            agent_spec = detect_agent(
+                agent, bypass=autonomy.bypass_agent_approvals, max_turns=max_turns
+            )
             if agent_spec is None:
                 # Distinct from a requested plan-only run: the operator asked for
                 # execution and did not get it, which a script must be able to see.
@@ -250,6 +290,14 @@ def run_project(
         agent_timeout=agent_timeout,
         check_timeout=check_timeout,
     )
+
+    checkpointer = (
+        Checkpointer.start(root, commit=commit, rollback=rollback)
+        if not plan_only
+        else Checkpointer(root=root, reason="plan-only run makes no changes")
+    )
+    if checkpointer.reason:
+        notes.append(f"checkpoints: {checkpointer.reason}")
 
     if not plan_only and not plan.checks:
         # Worth saying out loud: with no declared gates, "done" rests entirely on
@@ -335,14 +383,26 @@ def run_project(
         check_results = run_checks(plan.checks, root, timeout=plan.check_timeout) if agent_result.ok else []
         evidence = [agent_result.evidence, *(check.evidence for check in check_results)]
 
+        commit_sha = ""
+        rolled_back = False
         if agent_result.ok and all(check.ok for check in check_results):
             state = complete_task(root, task["id"], evidence)
             outcome = "done"
             reason = ""
+            # Commit after the state write, so a task recorded as done always has
+            # its code in history rather than the other way round.
+            commit_sha = checkpointer.commit_task(task["id"], task["title"], "\n".join(evidence))
         else:
             reason = _failure_reason(agent_result, check_results)
             state = fail_attempt(root, task["id"], reason)
             outcome = "failed"
+            # A half-finished attempt left in the tree is what the next attempt
+            # then has to understand before it can fix anything.
+            rolled_back = checkpointer.rollback_task()
+            if rolled_back:
+                record_evidence(
+                    root, task["id"], f"rolled back to {checkpointer.baseline[:12]} after: {reason}"
+                )
 
         iterations.append(
             Iteration(
@@ -355,6 +415,10 @@ def run_project(
                 checks=[check.to_dict() for check in check_results],
                 agent=agent_result.to_dict(),
                 reason=reason,
+                commit=commit_sha,
+                rolled_back=rolled_back,
+                cost_usd=agent_result.cost_usd,
+                turns=agent_result.turns,
             )
         )
 
@@ -379,6 +443,7 @@ def run_project(
         EXIT_INCOMPLETE: "incomplete",
     }[exit_code]
 
+    costs = [item.cost_usd for item in iterations if item.cost_usd is not None]
     report = RunReport(
         phase=phase,
         autonomy=autonomy.level,
@@ -388,14 +453,21 @@ def run_project(
         blocked=blocked,
         design=design_paths,
         plan=plan.to_dict(),
+        checkpoint={
+            "enabled": checkpointer.enabled,
+            "rollback": checkpointer.rollback,
+            "baseline": checkpointer.baseline,
+            "reason": checkpointer.reason,
+        },
         notes=notes,
         instruction=_INSTRUCTIONS[key],
         duration=round(time.monotonic() - started, 1),
+        cost_usd=round(sum(costs), 4) if costs else None,
         exit_code=exit_code,
     )
     append_run_log(
         root,
         f"run: {len(report.completed)}/{len(iterations)} tasks completed, phase={phase}, "
-        f"autonomy={autonomy.level}, exit={exit_code}",
+        f"autonomy={autonomy.level}, commits={len(report.commits)}, exit={exit_code}",
     )
     return report

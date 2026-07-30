@@ -44,6 +44,11 @@ Exit codes: `0` a task was handed to you or the project is done, `3` blocked, `5
 autonomy held a stop-and-ask task, `6` no agent CLI (terminal use only), `7` budget spent
 with work remaining.
 
+In terminal mode `run` also commits each completed task (`altai(<task-id>): <title>`) and
+resets a failed attempt back to the previous checkpoint. It refuses to do either when the
+working tree was already dirty at the start of the run, so it never commits over or deletes
+work it did not write. In nested mode it changes nothing — you are the one editing.
+
 ## Mandatory loop
 
 1. `... next` — returns exactly one dependency-ready task plus a research brief. It may also

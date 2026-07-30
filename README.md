@@ -61,8 +61,8 @@ task.
 ```bash
 altai run --safe                    # keep the stop-and-ask holds (see Autonomy)
 altai run --plan-only               # next task only, implement it yourself
-altai run --design                  # write the pre-code design plan first
 altai run --check "npm run e2e"     # add a gate every task must pass
+altai run --no-commit               # do not commit per task
 altai run --agent codex --max-iterations 50 --time-budget 3600
 ```
 
@@ -86,6 +86,33 @@ caller instead of spawning a second agent underneath it.
 A project that declares no test or build command says so in the report: with no gate,
 completion rests on the agent's exit code alone, which is the weakest evidence this tool
 accepts.
+
+Before any of that, the run writes the pre-code design plan (`.altai/design/`) whenever the
+project model is confirmed — `--no-design` skips it, and an unconfirmed model skips it with
+a note instead of an error.
+
+### Checkpoints: the undo an unattended run needs
+
+Each completed task becomes its own commit (`altai(<task-id>): <title>`, with the
+verification commands and their exit codes in the body). Each failed attempt is reset back
+to the previous checkpoint, so the next attempt starts from a clean tree instead of
+someone's half-finished one. `.altai/` is ignored by the reset, so the state, evidence and
+audit trail of the run survive every rollback.
+
+Both are refused outright when the working tree is dirty at the start of the run: a commit
+would bury uncommitted work and a reset would delete it. The run says so in its notes and
+continues without checkpoints. `--commit` forces commits anyway (rollback stays off),
+`--no-commit` disables them, `--no-rollback` keeps a failed attempt in the tree for
+inspection.
+
+### Budget
+
+`--max-turns` (default 120, `0` removes it) caps the agent's own turns per task where its
+CLI supports one, `--agent-timeout` caps its wall clock, `--max-iterations` caps tasks per
+run, and `--time-budget` caps the whole run. Spending a budget is not a failure: exit code
+7 means "stopped with work still ready", and re-running continues from exactly there. When
+the agent reports its own cost — Claude Code's headless JSON does — the run reports the
+per-task and total spend.
 
 ### Autonomy
 
@@ -122,10 +149,13 @@ Beyond the task graph, ALTAI keeps a model of the project itself under `.altai/`
   rule` and re-surfaced in every later task's brief.
 * **`opportunities.json`** — scored improvement candidates the repository never named by
   ID (an oversized function, a name duplicated across files, a heavily-called function no
-  test appears to cover). These are never added to the task graph automatically — a
-  candidate *creates* new intent, unlike a gap, which only closes a contradiction in intent
-  the repository already declared. `altai promote <id>` is the one, deliberate path from
-  candidate to real task.
+  test appears to cover). A candidate *creates* new intent, unlike a gap, which only closes
+  a contradiction in intent the repository already declared, so nothing adopts one by
+  accident: `altai promote <id>` is the deliberate manual path, and `altai run` adopts them
+  as a decision it records — each promotion writes a `product-decisions` memory entry *and*
+  creates the task in the same pass, so a recommendation is never filed away unapplied, nor
+  applied without an explanation the next task can read. `--no-apply` turns that off, and
+  `--safe` leaves candidates matching a stop-and-ask category pending.
 
 A **gap analyzer** compares what `project-model.json` declares against what the repository
 actually has — an unconfirmed purpose, a declared test command with no tests, tests with no
@@ -192,9 +222,10 @@ the agent per task, and verifies the result (see [Use it](#use-it-one-command)).
 | `altai autopilot [path] [--design] [--json] [--no-rescan]` | Optionally generate the pre-code design plan, then report one task + opportunities + policy check. |
 | `altai run [path]` | The single command: plan, apply recommendations, implement, verify and record every task until the project is done. |
 
-`run` flags: `--safe` / `--autonomy {full,guarded}`, `--plan-only`, `--design`,
-`--no-apply`, `--no-rescan`, `--agent <name\|command\|none>`, `--check <command>`
-(repeatable), `--max-iterations`, `--max-sweeps`, `--agent-timeout`, `--check-timeout`,
+`run` flags: `--safe` / `--autonomy {full,guarded}`, `--plan-only`, `--design` /
+`--no-design`, `--no-apply`, `--no-rescan`, `--agent <name\|command\|none>`,
+`--check <command>` (repeatable), `--commit` / `--no-commit`, `--no-rollback`,
+`--max-turns`, `--max-iterations`, `--max-sweeps`, `--agent-timeout`, `--check-timeout`,
 `--time-budget`, `--allow-nested`, `--json`.
 
 Substitute `python .altai/tool/run.py` for `altai` when using the vendored install.
@@ -268,12 +299,23 @@ keeps instead of the pause is the record — every automatic approval names the 
 categories in `.altai/runs/log.md` and in `.altai/evidence/<task-id>.md` — and the
 evidence contract: a task still only completes when the project's own checks pass.
 
+What it also keeps is an undo: per-task commits and rollback-on-failure mean an unattended
+run's mistakes are revertable, and it refuses to checkpoint at all rather than commit over
+uncommitted work of yours.
+
 Neither mode is enforcement. ALTAI has no sandbox: the spawned agent has exactly the
 permissions its own configuration grants it, and the keyword check is a hint from a task's
 own words, not a verdict on what the change will do. Real enforcement of what the host
 agent can do belongs to Claude Code / Codex configuration (`.claude/settings.json`
 permissions and hooks), not to this package. Use `--safe` where a wrong step is expensive,
 and full autonomy where the worst case is a bad commit.
+
+## Where the design came from
+
+`docs/benchmark-2026-07.md` records the July 2026 research pass behind `altai run`: what
+comparable autonomous coding harnesses do, which of their capabilities this project
+adopted, and which it deliberately did not (worktree isolation, parallel agents,
+multi-persona SDLC role-play, a second-agent review gate) with the reason for each.
 
 ## Development
 
@@ -284,7 +326,9 @@ python -m pip wheel . --no-deps --no-build-isolation --wheel-dir /tmp/altai-whee
 ```
 
 These are the required local quality gates: tests, syntax compilation, and an installable
-wheel. Every command must exit with status 0; any failure keeps the active ALTAI task open
+wheel. On Debian/Ubuntu's patched setuptools, `--no-build-isolation` fails with
+`AttributeError: install_layout` before it reaches this package — drop that flag there and
+build with isolation instead. Every command must exit with status 0; any failure keeps the active ALTAI task open
 until it is fixed and rerun. The project currently configures no dedicated linter, static
 type checker, or security scanner, and the package has no runtime dependencies. Do not
 claim those checks ran unless the corresponding tool is deliberately added and documented.
