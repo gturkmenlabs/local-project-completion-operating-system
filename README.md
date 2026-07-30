@@ -2,8 +2,15 @@
 
 ALTAI is a local project-completion operating system for Claude Code and Codex. It scans a
 repository, builds a model of what the project is *for*, forms a task graph, prepares
-task-specific research instructions, and forces implementation through evidence-based
-quality gates.
+task-specific research instructions — and then runs the whole thing to completion:
+
+```bash
+altai run
+```
+
+One command takes a repository from wherever it is to done. It hands each dependency-ready
+task to your host agent CLI, verifies the result against the project's own checks, commits
+what passed, rolls back what failed, and repeats. Unattended by default.
 
 Requires Python 3.10+. No dependencies.
 
@@ -12,7 +19,7 @@ Requires Python 3.10+. No dependencies.
 ```bash
 python scripts/install_into_project.py /path/to/your-project
 cd /path/to/your-project
-python .altai/tool/run.py start .
+python .altai/tool/run.py run .
 ```
 
 The installer vendors the package under `.altai/tool/` — nothing lands in your project
@@ -35,14 +42,15 @@ python scripts/install_into_project.py --no-caveman ~/code/app-one
 ```
 
 Each target receives `.altai/integration.json`, which records installed features and the
-exact start, continue, and design commands. Re-running the installer updates ALTAI-owned
-files while preserving existing `AGENTS.md` and `CLAUDE.md` content.
+exact commands for that project (`start`, `run`, `continue`, `design`, `safe`). Re-running
+the installer updates ALTAI-owned files while preserving existing `AGENTS.md` and
+`CLAUDE.md` content.
 
 Optionally install the CLI globally instead of vendoring it:
 
 ```bash
 pip install -e .
-altai start /path/to/your-project
+altai run /path/to/your-project
 ```
 
 ## Use it: one command
@@ -145,8 +153,9 @@ Beyond the task graph, ALTAI keeps a model of the project itself under `.altai/`
   regex pass for other languages), used to guess which files a task likely touches.
 * **`.altai/memory/`** — five category files (architecture, product-decisions,
   coding-conventions, failed-approaches, user-preferences) plus a structured
-  `learned-rules.json`, written explicitly by the host agent via `altai learn` / `altai
-  rule` and re-surfaced in every later task's brief.
+  `learned-rules.json`, written by the host agent via `altai learn` / `altai rule` — and by
+  `altai run` whenever it adopts a recommendation — then re-surfaced in every later task's
+  brief. Nothing here is inferred from a diff: every entry is a decision someone took.
 * **`opportunities.json`** — scored improvement candidates the repository never named by
   ID (an oversized function, a name duplicated across files, a heavily-called function no
   test appears to cover). A candidate *creates* new intent, unlike a gap, which only closes
@@ -177,9 +186,14 @@ intent is confirmed, not merely derived from documentation.
 
 ## Product design and UX architecture
 
-Use the opt-in design pass after the host agent has confirmed `project-model.json`:
+`altai run` writes the design plan on every run, as soon as the host agent has confirmed
+`project-model.json` — before it is confirmed the pass is skipped with a note, not an
+error. `--no-design` opts out, and `altai autopilot . --design` still runs it as a
+standalone pass:
 
 ```bash
+altai run              # design plan included, when the model is confirmed
+altai run --no-design  # skip it
 altai autopilot . --design
 ```
 
@@ -201,7 +215,7 @@ smallest screen set supported by the core flow, preserves existing design tokens
 when the model is unconfirmed. Logo/name changes, a replacement target audience, paid tools,
 and legal or corporate brand decisions remain human decisions.
 
-`--design` does not write application UI, browse the web, launch the project, take
+The design pass does not write application UI, browse the web, launch the project, take
 screenshots, or claim visual conformance. Claude Code or Codex performs benchmark research
 and implementation. Afterwards, `VisualVerifier` can validate the host agent's recorded
 build, screenshot, mobile-width, console, and primary-flow evidence.
@@ -260,6 +274,12 @@ Substitute `python .altai/tool/run.py` for `altai` when using the vendored insta
   genuinely will not be done, so one hard block cannot make completion unreachable.
 * **Parallel-safe.** Every mutation — task state, opportunity promotion, memory writes —
   takes the project's lock, so two agents cannot clobber each other's recorded work.
+* **The runner verifies; the agent does not self-certify.** Under `altai run`, evidence is
+  the project's own checks re-run by the runner after the agent exits. An agent that
+  reports success over a red gate gets a failed attempt.
+* **An unattended run is reversible.** Each completed task is its own commit and each
+  failed attempt resets to the previous checkpoint — and when the working tree was already
+  dirty, ALTAI refuses to commit or reset at all rather than touch work it did not write.
 
 `next` exits 0 when it hands out a task, 3 when the project is blocked, and 4 when it is
 complete. `autopilot` adds exit code 5: the returned task's own text matched a
@@ -280,6 +300,7 @@ status text.
 ├── opportunities.json   # scored, not-yet-adopted improvement candidates
 ├── memory/               # architecture, product-decisions, coding-conventions,
 │                         # failed-approaches, user-preferences, learned-rules.json
+├── integration.json     # installed features + this project's exact ALTAI commands
 ├── AGENT_TASK.md         # generated loop instructions for the host agent
 ├── research/             # one note per task, written by the agent
 ├── evidence/             # append-only evidence per task
@@ -337,9 +358,11 @@ python -m pip wheel . --no-deps --no-build-isolation --wheel-dir /tmp/altai-whee
 ```
 
 These are the required local quality gates: tests, syntax compilation, and an installable
-wheel. On Debian/Ubuntu's patched setuptools, `--no-build-isolation` fails with
-`AttributeError: install_layout` before it reaches this package — drop that flag there and
-build with isolation instead. Every command must exit with status 0; any failure keeps the active ALTAI task open
+wheel. Every command must exit with status 0; any failure keeps the active ALTAI task open
 until it is fixed and rerun. The project currently configures no dedicated linter, static
 type checker, or security scanner, and the package has no runtime dependencies. Do not
 claim those checks ran unless the corresponding tool is deliberately added and documented.
+
+On Debian/Ubuntu's patched setuptools, `--no-build-isolation` fails with
+`AttributeError: install_layout` before it ever reaches this package. Drop the flag there
+and build with isolation instead.
